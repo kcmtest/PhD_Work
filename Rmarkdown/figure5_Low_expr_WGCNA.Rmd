@@ -1,0 +1,1192 @@
+---
+title: "Low_expr_WGCNA"
+author: "KCM"
+date: "2023-23-01"
+output: 
+  html_document: default
+  word_document: default
+  pdf_document: default
+code_folding: hide
+---
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r eval=!exists(".standalone"), message=FALSE, include=!exists(".standalone")}
+plotDir = ifelse(exists(".standalone"), "", "part1/")
+if(plotDir!="") if(!file.exists(plotDir)) dir.create(plotDir)
+knitr::opts_chunk$set(fig.path=plotDir, dev=c("png", "pdf"))
+knitr::opts_chunk$set(dpi=600,fig.width=15,fig.height = 10)
+
+#https://perslab.github.io/bentsen-rausch-2020/index.html
+library(dynamicTreeCut)
+library(flashClust) 
+library(WGCNA) 
+library(tidyverse)
+library(doParallel)
+library(lme4)
+library(emmeans)
+library(ggbeeswarm )
+library(ggsci)
+library(ggpubr)
+library(ggforce)
+library(tidygraph)
+library(igraph)
+library(ggraph)
+library(extrafont) 
+library(Seurat)
+#library(WGCNA)
+library(cluster)
+library(parallelDist)
+#library(ggsci)
+library(emmeans)
+#library(lme4)
+library(ggbeeswarm)
+#library(genefilter)
+#library(tidyverse)
+library(reshape2)
+library(igraph)
+#library(gProfileR)
+#library(ggpubr)
+library(here)
+#library(ggforce)
+#library(tidygraph)
+#library(igraph)
+#library(ggraph)
+#library(cowplot)
+library(future)
+library(PCAtools)
+
+
+allowWGCNAThreads() 
+```
+
+
+## Prepare the data and metadata 
+```{r Read_data}
+RNA_seq = read.csv("..//Low_hig_gene/Less_than_one_std_deviation.txt",row.names = 1,sep = "\t",check.names = FALSE)
+
+normalized_counts <- (RNA_seq) %>%
+  t() 
+m1 <-  read.csv("../Final_metadata_PCA_model.txt",sep = "\t")
+
+metadata <- m1 %>% select(PATIENT_ID,FAB,RISK_CYTO,TMB_NONSYNONYMOUS,WBC,Platelets,PB_Blast,BM_Blast,Cytogenetic_code) 
+names(metadata)[1] = "sample"
+```
+
+## Soft Threshold esitmate
+
+```{r soft_threshold}
+sft <- pickSoftThreshold(normalized_counts,
+                         dataIsExpr = TRUE,
+                         corFnc = cor,
+                         networkType = "signed"
+)
+
+sft_df <- data.frame(sft$fitIndices) %>%
+  dplyr::mutate(model_fit = -sign(slope) * SFT.R.sq)
+
+sof_thres <- ggplot(sft_df, aes(x = Power, y = model_fit, label = Power)) +
+  # Plot the points
+  geom_point() +
+  # We'll put the Power labels slightly above the data points
+  geom_text(nudge_y = 0.1) +
+  # We will plot what WGCNA recommends as an R^2 cutoff
+  geom_hline(yintercept = 0.80, col = "red") +
+  # Just in case our values are low, we want to make sure we can still see the 0.80 level
+  ylim(c(min(sft_df$model_fit), 1.05)) +
+  # We can add more sensible labels for our axis
+  xlab("Soft Threshold (power)") +
+  ylab("Scale Free Topology Model Fit, signed R^2") +
+  ggtitle("Scale independence") +
+  # This adds some nicer aesthetics to our plot
+  theme_classic(base_size = 30)
+
+```
+
+
+## Block wisemodule calculation
+
+```{r blockwise_module_calculate}
+
+
+# bwnet <- blockwiseModules(normalized_counts,
+#                           maxBlockSize = 5000, # What size chunks (how many genes) the calculations should be run in
+#                           TOMType = "signed", # topological overlap matrix
+#                           power = 7, # soft threshold for network construction
+#                           numericLabels = TRUE, # Let's use numbers instead of colors for module labels
+#                           randomSeed = 1234, # there's some randomness associated with this calculation
+#                           # so we should set a seed
+# )
+
+#https://github.com/pgugger/TranscriptomeAnalysis/blob/master/Exercise3.md
+datExpr <- normalized_counts
+softPower = 7
+SubGeneNames<-colnames(datExpr)
+adj= adjacency(datExpr, type = "signed", power = softPower)
+diag(adj)<-0
+TOM=TOMsimilarityFromExpr(datExpr, networkType = "signed", TOMType = "signed", power = softPower, maxPOutliers = 0.05)
+
+colnames(TOM) = rownames(TOM) = SubGeneNames
+dissTOM=1-TOM
+geneTree = hclust(as.dist(dissTOM),method="average") #use complete for method rather than average (gives better results)
+
+dynamicMods = cutreeDynamic(dendro = geneTree, distM = dissTOM, deepSplit = 4, pamRespectsDendro = FALSE, minClusterSize = 30);
+
+dynamicColors = labels2colors(dynamicMods) #label each module with a unique color
+plotDendroAndColors(geneTree, dynamicColors, "Dynamic Tree Cut",
+                    dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05, 
+                    main = "Gene dendrogram and module colors") #plot the modules with colors
+
+
+```
+
+## Calculate Eigengenes and Merge Close Modules
+
+```{r Eigengenes_close_module}
+#https://github.com/pgugger/TranscriptomeAnalysis/blob/master/Exercise3.md
+#https://deneflab.github.io/HNA_LNA_productivity/WGCNA_analysis.html#
+#https://github.com/Richarizardd/Computational-Biology-Projects/blob/master/Weighted%20Gene%20Correlation%20Network%20Analysis/WGCNA1.Rmd
+MEList = moduleEigengenes(datExpr, colors = dynamicColors)
+ModEigs = MEList$eigengenes
+ModEigs
+
+
+MEs = moduleEigengenes(datExpr, dynamicColors)$eigengenes 
+ME1<-MEs
+row.names(ME1)<-row.names(datExpr)
+MEDiss = 1-cor(MEs);
+METree = hclust(as.dist(MEDiss), method = "average");
+plot(METree, main = "Clustering of module eigengenes",xlab = "", sub = "")
+MEDissThres = 0.2
+#abline(h= 0.2, col = "red")
+
+merge = mergeCloseModules(datExpr, dynamicColors, cutHeight = MEDissThres, verbose = 3)
+
+mergedColors = merge$colors
+mergedMEs = merge$newMEs
+moduleColors = mergedColors
+MEs = mergedMEs
+modulekME = signedKME(datExpr,MEs)
+
+plotDendroAndColors(geneTree, cbind(dynamicColors, mergedColors),
+c("Dynamic Tree Cut", "Merged dynamic"),
+dendroLabels = FALSE, hang = 0.03,
+addGuide = TRUE, guideHang = 0.05)
+
+moduleColors = mergedColors
+MEs = mergedMEs
+modulekME = signedKME(datExpr,MEs)
+```
+
+
+
+
+
+
+## Save the bwnet
+
+```{r save_block}
+readr::write_rds(bwnet,
+                 file = file.path("Low_wgcna_results.RDS")
+)
+
+bwnet <- readRDS("Low_wgcna_results.RDS")
+```
+
+
+## Explore WGCNA result
+
+```{r WGCNA_Exploratory}
+
+ module_eigengenes_explr <- bwnet$MEs
+# 
+# # Print out a preview
+ head(module_eigengenes_explr)
+# 
+all.equal(metadata$sample, rownames(module_eigengenes_explr))
+
+    
+```
+
+## modules have biggest differences across FAB and RISK_cyto
+
+```{r model_FAB_RISK_Cyto}
+# Create the design matrix from the `time_point` variable
+des_mat <- model.matrix(~ metadata$RISK_CYTO + metadata$FAB)
+
+# lmFit() needs a transposed version of the matrix
+#fit <- limma::lmFit(t(module_eigengenes), design = des_mat)
+
+fit <- limma::lmFit(t(mergedMEs), design = des_mat)
+
+
+# Apply empirical Bayes to smooth standard errors
+fit <- limma::eBayes(fit)
+
+# Apply multiple testing correction and obtain stats
+stats_df <- limma::topTable(fit, number = ncol(module_eigengenes_explr)) %>%
+  tibble::rownames_to_column("module")
+
+head(stats_df)
+
+#MEgreen most diffrentially expressed modules 
+
+```
+
+## Module inspection
+
+```{r make_modules_for_expression}
+# module_19_df <- module_eigengenes %>%
+#   tibble::rownames_to_column("sample") %>%
+#   # Here we are performing an inner join with a subset of metadata
+#   dplyr::inner_join(metadata %>%
+#                       dplyr::select(sample,RISK_CYTO,FAB),
+#                     by = c("sample")
+#   )
+
+module_19_df <- mergedMEs %>%
+  tibble::rownames_to_column("sample") %>%
+  # Here we are performing an inner join with a subset of metadata
+  dplyr::inner_join(metadata %>%
+                      dplyr::select(sample,RISK_CYTO,FAB),
+                    by = c("sample")
+  )
+
+
+
+stdf = melt(module_19_df)
+
+diff_module <- ggplot(
+  stdf,
+  aes(
+    x = FAB,
+    y = value,
+    color = RISK_CYTO
+  )
+) +
+  # a boxplot with outlier points hidden (they will be in the sina plot)
+  geom_boxplot(width = 0.4, outlier.shape = NA) +
+  # A sina plot to show all of the individual data points
+  ggforce::geom_sina(maxwidth = 0.3) +
+  theme_classic(base_size = 30)+
+  facet_wrap(~variable)
+
+
+
+
+```
+
+
+
+## Generate function to look up genes in each network
+
+```{r gene_search}
+#https://perslab.github.io/bentsen-rausch-2020/15_tany_wgcna_pseudo.html
+modules<-MEs
+c_modules<-data.frame(moduleColors)
+row.names(c_modules)<-colnames(datExpr) 
+module.list.set1<-substring(colnames(modules),3) 
+index.set1<-0
+Network=list() 
+for (i in 1:length(module.list.set1)){index.set1<-which(c_modules==module.list.set1[i])
+Network[[i]]<-row.names(c_modules)[index.set1]}
+names(Network)<-module.list.set1
+lookup<-function(gene,network){return(network[names(network)[grep(gene,network)]])}
+
+```
+
+
+
+## Module trait
+```{r Module_trait}
+datTraits <- metadata[-c(9)]
+nGenes = ncol(datExpr)
+nSamples = nrow(datExpr)
+MEs = orderMEs(MEs)
+var<-model.matrix(~0+metadata$FAB)
+moduleTraitCor <- cor(MEs, var, use="p")
+
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples)
+
+#moduleTraitCor = cor(MEs, datTraits, use = "p")
+#moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples)
+
+#sizeGrWindow(8,4)
+
+#Displaying correlations and its p-values
+
+cor<-melt(moduleTraitCor)
+ggplot(cor, aes(Var2, Var1)) + geom_tile(aes(fill = value), 
+     colour = "white") + scale_fill_gradient2(midpoint = 0, low = "blue", mid = "white",
+                            high = "red", space = "Lab", name="Correlation \nStrength") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + xlab("Treatment") + ylab(NULL)
+
+
+datTraits1 = datTraits[-(2:3)] %>% column_to_rownames("sample")
+head(datTraits1)
+names(datTraits1)[1] = "TMB"
+
+
+MEs = orderMEs(MEs)
+moduleTraitCor = cor(MEs, datTraits1, use = "p")
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples)
+
+#sizeGrWindow(8,4)
+
+#Displaying correlations and its p-values
+textMatrix =  paste(signif(moduleTraitCor, 2), "\n(",
+                    signif(moduleTraitPvalue, 1), ")", sep = "")
+dim(textMatrix) = dim(moduleTraitCor)
+par(mar = c(6, 8.5, 3, 3))
+
+#Displaying the correlation values in a heatmap plot
+labeledHeatmap(Matrix = moduleTraitCor,
+               xLabels = names(datTraits1),
+               yLabels = names(MEs),
+               ySymbols = names(MEs),
+               colorLabels = FALSE,
+               colors = blueWhiteRed(50),
+               textMatrix = textMatrix,
+               setStdMargins = TRUE,
+               cex.text = 0.8,
+               zlim = c(-1,1),
+               main = paste("Module-trait relationships"))
+```
+
+
+## Get hubgenes in order
+```{r hubgene_order}
+hubgenes<-lapply(seq_len(length(Network)), function(x) {
+  dat<-modulekME[Network[[x]],]
+  dat<-dat[order(-dat[paste0("kME",names(Network)[x])]),]
+  gene<-rownames(dat)
+  return(gene)
+})
+
+names(hubgenes)<-names(Network)
+d <- unlist(hubgenes)
+d <- data.frame(gene = d, 
+           vec = names(d))
+write_csv(d, "wgcna_genemodules_nokme_Low_std.csv")
+
+```
+
+## Build linear models for differential expression
+
+```{r Mixed_linear_model}
+#https://ourcodingclub.github.io/tutorials/mixed-models/
+
+MEs %>% select(-MEgrey) -> MEs
+data<-data.frame(MEs,  
+                 sample=as.factor(metadata$sample), group=metadata$RISK_CYTO, 
+                 celltype=metadata$FAB)
+
+# loop through modules and perform linear regression
+# mod<-lapply(colnames(MEs), function(me) {
+#   # interaction between treatmet group and cell type
+#   # random effect for batch
+#   # random effect for sample
+#   mod<-lmer(MEs[[me]] ~ BM*celltype + (1|group),data=data)
+#   # use emmeans to test pariwaise differences
+#   pairwise<-emmeans(mod, pairwise ~  celltype)
+#   plot<-data.frame(plot(pairwise, plotIt=F)$data)
+#   sig<-as.data.frame(pairwise$contrasts)
+#   sig%>%separate(contrast, c("start", "end"), sep = " - ") -> sig
+#   yvals<-unlist(lapply(unique(sig$celltype), function(x) {
+#     x<-as.character(x)
+#     y<-data[data$celltype==x,]
+#     z<-max(as.numeric(y[[me]]))
+#     names(z)<-x
+#     return(z)
+#   }))
+#   sig$yvals<-yvals[match(sig$celltype, names(yvals))]
+#   sig$yvals[duplicated(sig$yvals)]<-sig$yvals[duplicated(sig$yvals)]+.004
+#   sig$yvals[duplicated(sig$yvals)]<-sig$yvals[duplicated(sig$yvals)]+.004
+#   sig$yvals[duplicated(sig$yvals)]<-sig$yvals[duplicated(sig$yvals)]+.004
+#   return(sig)
+# })
+
+
+mod<-lapply(colnames(MEs), function(me) {
+  # interaction between treatmet group and cell type
+  # random effect for batch
+  # random effect for sample
+  mod<-lmer(MEs[[me]] ~ celltype + (1|group),data=data)
+  # use emmeans to test pariwaise differences
+   pairwise<-emmeans(mod, pairwise ~ celltype)
+  plot<-data.frame(plot(pairwise, plotIt=F)$data)
+  sig<-as.data.frame(pairwise$contrasts)
+  sig%>%separate(contrast, c("start", "end"), sep = " - ") -> sig
+  yvals<-unlist(lapply(unique(sig$celltype), function(x) {
+    x<-as.character(x)
+    y<-data[data$celltype==x,]
+    z<-max(as.numeric(y[[me]]))
+    names(z)<-x
+    return(z)
+  }))
+  sig$yvals<-yvals[match(sig$celltype, names(yvals))]
+  sig$yvals[duplicated(sig$yvals)]<-sig$yvals[duplicated(sig$yvals)]+.004
+  sig$yvals[duplicated(sig$yvals)]<-sig$yvals[duplicated(sig$yvals)]+.004
+  sig$yvals[duplicated(sig$yvals)]<-sig$yvals[duplicated(sig$yvals)]+.004
+  return(sig)
+})
+
+
+
+names(mod) <- colnames(MEs)
+sig <- bind_rows(mod, .id="id")
+sig$symbol <- sig$p.value
+# set ranges for significance markings
+sig$symbol[findInterval(sig$symbol, c(0.1,2)) == 1L] <-NA
+sig$symbol[findInterval(sig$symbol, c(0.01,0.1)) == 1L] <- "*"
+sig$symbol[findInterval(sig$symbol, c(0.001,0.01)) == 1L] <- "**"
+
+
+sig$symbol[findInterval(sig$symbol, c(1e-200,0.001)) == 1L] <- "***" 
+
+
+```
+
+
+## Plot_modules
+
+```{r Module_plot}
+
+
+data1 <- melt(data, id.vars = c("group","celltype"))
+
+lapply(unique(data1$variable), function(x) {
+  tryCatch({
+  print(ggplot(data=data1[data1$variable==x,], aes(x=group, y=as.numeric(value))) + 
+  geom_quasirandom(aes(fill=celltype), shape=21, size=2, alpha=.75) + 
+  scale_fill_manual(values=pal_jco()(10)) +  ylab(NULL) + xlab(NULL) + 
+  theme_pubr() + theme(axis.text.x = element_text(angle=45, hjust=1, face="bold"), plot.title = element_text(hjust=0.5)) + 
+  scale_y_continuous(aes(name="",limits=c(min(value)-.02,max(value))+.02)) + facet_wrap(.~group) +
+  labs(y=NULL, x=NULL) + ggtitle(x)) },
+  error = function(err) {
+    print(err)
+  }
+  )
+})
+
+write_csv(sig, "wgcna_linearmodel_testing.csv")
+
+```
+
+
+## Plot gene network
+
+```{r gene_network}
+
+hubgenes <- lapply(seq_len(length(Network)), function(x) {
+  dat <- modulekME[Network[[x]], ]
+  dat <- dat[order(-dat[paste0("kME", names(Network)[x])]), ]
+  gene <- data.frame(gene=rownames(dat),kme=dat[,x]) 
+  return(gene)
+})
+
+names(hubgenes)<- names(Network)
+
+
+
+
+########
+
+
+color <- c("turquoise","blue","midnightblue","greenyellow")
+lapply(color, function(col) {
+  maxsize <- 50
+  hubs <- data.frame(genes=hubgenes[[col]]$gene[1:maxsize], kme = hubgenes[[col]]$kme[1:maxsize], mod = rep(col,50))
+}) -> hub_plot 
+
+
+hub_plot <- lapply(hub_plot, function(x) {
+  adj[as.character(x$genes), as.character(x$genes)] %>% 
+  graph.adjacency(mode = "undirected", weighted = T, diag = FALSE) %>%
+  as_tbl_graph(g1) %>% upgrade_graph() %>% activate(nodes) %>%
+    dplyr::mutate(mod=x$mod) %>%
+    dplyr::mutate(kme=x$kme)  %>% 
+    activate(edges) %>% dplyr::filter(weight>.15)}
+)
+
+#hub_plot
+
+hub_plot <- lapply(hub_plot, function(x) {
+  x  %>% 
+    activate(nodes) %>% 
+    dplyr::mutate(color = ifelse(name %in% c("SIRPA","ZBTB8A","TET1","PHPT1"), yes="red", no="black"))
+})
+
+
+
+set.seed("139")
+plotlist <- lapply(hub_plot,  function(x) {
+  print(ggraph(x,  layout = 'fr') + 
+  geom_edge_link(color="darkgrey", aes(alpha = weight), show.legend = F)  + 
+  scale_edge_width(range = c(0.2, 1)) + geom_node_text(aes(label = name, color=color), fontface="bold", size=3, repel = T) +
+  geom_node_point(shape=21, alpha=0.5, fill="grey70", size=3) + 
+    scale_color_manual(values=c("gray0","red")) +
+  theme_graph() + theme(legend.position = "none", plot.title = element_text(hjust=0.5, vjust=1), plot.margin = unit(c(0, 0, 0, 0), "cm")) + coord_cartesian(clip = "off"))
+})
+
+
+
+### module_kmehubplot hubplot1
+
+sigmods <-  c("turquoise","blue","midnightblue","greenyellow") #TMB
+sigmods <-  c("turquoise","blue")
+
+sigmods <- c("magenta","red")
+sigmods
+lapply(sigmods, function(col) {
+    maxsize <- 40
+    hubs <- data.frame(genes=hubgenes[[col]]$gene[1:maxsize], kme = hubgenes[[col]]$kme[1:maxsize], mod = rep(col,40))
+}) %>% bind_rows() -> hub_plot1 
+
+
+
+adj[hub_plot1$genes, hub_plot1$genes] %>% 
+  graph.adjacency(mode = "undirected", weighted = T, diag = FALSE) %>%
+  as_tbl_graph(g1) %>% upgrade_graph() %>% activate(nodes) %>% dplyr::mutate(mod=hub_plot1$mod) %>% 
+  dplyr::mutate(kme=hub_plot1$kme) %>% activate(edges) %>% dplyr::filter(weight>.15) %>% activate(nodes) %>% 
+  filter(!node_is_isolated()) %>% 
+  dplyr::mutate(color = ifelse(name %in% c("SIRPA","ZBTB8A","TET1","PHPT1"), yes="red", no="black")) -> hub_plot1
+
+#https://perslab.github.io/bentsen-rausch-2020/8_astro_wgcna.html
+set.seed("21")
+#options(ggrepel.max.overlaps = Inf)
+geneplot <- ggraph(hub_plot1,  layout = 'fr') + 
+  geom_edge_link(color="darkgrey", aes(alpha = weight), show.legend = F)  + 
+  scale_edge_width(range = c(0.2, 1)) + geom_node_text(aes(label = name, color=color), size=3, repel=T) +
+  geom_node_point(aes(fill = color, size=kme), shape=21, alpha=0.5) + 
+  scale_size(range = c(1,5), name = "kME") +
+  ggsci::scale_fill_npg(name="Module") +
+  # guides(fill = guide_legend(override.aes = list(size=5)),
+  #        size = guide_legend(override.aes = list(size=c(1,2,3,4)))) + 
+   theme_graph(base_family="sans",base_size = 40)+ theme(legend.title.align=0.5,
+                         legend.box = "horizontal", 
+                         legend.position = c(0.9, 0.9),
+                         legend.margin = margin(-0.5,0,0,0, unit="cm"),
+                         legend.title = element_text(size=10),
+                         legend.text = element_text(size=8)) +
+  scale_color_manual(values=c("gray0","red")) + guides(color=FALSE) +
+  coord_cartesian(clip="off")
+
+#color = as.factor(name)
+
+
+
+geneplot <- ggraph(hub_plot1,  layout = 'kk') + 
+  geom_edge_link(color="darkgrey", aes(alpha = weight), show.legend = F)  + 
+  scale_edge_width(range = c(0.2, 1)) + geom_node_text(aes(label = name, color=color), size=3, repel=T) +
+  geom_node_point(aes(fill = mod, size=kme), shape=21, alpha=0.5) + 
+  scale_size(range = c(1,5), name = "kME") +
+  scale_fill_manual(name="Module", values = c("turquoise","blue","midnightblue","greenyellow")) +
+   # scale_fill_manual(name="Module", values = c("magenta","red")) +
+
+  #ggsci::scale_fill_npg(name="Module") +
+  # guides(fill = guide_legend(override.aes = list(size=5)),
+  #        size = guide_legend(override.aes = list(size=c(1,2,3,4)))) + 
+  theme_graph(base_family="sans",base_size = 40)+ theme(legend.title.align=0.5,
+                                                        legend.box = "horizontal", 
+                                                        legend.position = c(0.9, 0.9),
+                                                        legend.margin = margin(-0.5,0,0,0, unit="cm"),
+                                                        legend.title = element_text(size=10),
+                                                        legend.text = element_text(size=8)) +
+  scale_color_manual(values=c("gray0","red")) + guides(color=FALSE) +
+  coord_cartesian(clip="off")
+
+
+
+#geom_node_point(aes(color = color,filter = is.na(label)), shape = 20, size = 1)+
+#https://perslab.github.io/bentsen-rausch-2020/15_tany_wgcna_pseudo.html
+
+
+
+```
+
+
+
+
+## Extract modules
+
+```{r Module_filtering}
+modules_of_interest = c("black")
+
+d1$vec <- gsub('[0-9]+', '',d$vec )
+
+
+genes_of_interest = d1 %>%
+  subset(vec %in% modules_of_interest)
+
+
+ expr_of_interest = RNA_seq[genes_of_interest$gene,]
+ dim(expr_of_interest)
+ TOM = TOMsimilarityFromExpr(t(expr_of_interest),
+                             power = softPower)
+
+```
+
+
+## Network table
+
+```{r generate_full_network_table}
+ # Add gene names to row and columns
+head(d1)
+names(d1)[2] = "colors"
+row.names(d1) = d1$gene
+
+ row.names(TOM) = row.names(expr_of_interest)
+ colnames(TOM) = row.names(expr_of_interest)
+ dim(TOM)
+ 
+ edge_list = data.frame(TOM) %>%
+   mutate(
+     gene1 = row.names(.)
+   ) %>%
+   pivot_longer(-gene1) %>%
+   dplyr::rename(gene2 = name, correlation = value) %>%
+   unique() %>%
+   subset(!(gene1==gene2)) %>%
+   mutate(
+     module1 = d1[gene1,]$colors,
+     module2 = d1[gene2,]$colors
+   )
+ 
+ 
+ head(edge_list)
+ dim(edge_list)
+ filter_edge_list = edge_list[complete.cases(edge_list),]
+ dim(filter_edge_list)
+```
+
+
+## Target Gene Identification integrating clinical data
+
+```{r trait_gene}
+#https://fuzzyatelin.github.io/bioanth-stats
+# Define variable weight containing the weight column of datTrait
+weight = as.data.frame(datTraits$BM_Blast)
+names(weight) = "BM_Blast"
+
+modNames = substring(names(mergedMEs), 3) #extract module names
+
+#Calculate the module membership and the associated p-values
+geneModuleMembership = as.data.frame(cor(datExpr, mergedMEs, use = "p"))
+MMPvalue = as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples))
+names(geneModuleMembership) = paste("MM", modNames, sep="")
+names(MMPvalue) = paste("p.MM", modNames, sep="")
+
+#Calculate the gene significance and associated p-values
+geneTraitSignificance = as.data.frame(cor(datExpr, weight, use = "p"))
+GSPvalue = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance), nSamples))
+names(geneTraitSignificance) = paste("GS.", names(weight), sep="")
+names(GSPvalue) = paste("p.GS.", names(weight), sep="")
+head(GSPvalue)
+
+module = "magenta"
+column = match(module, modNames)
+moduleGenes = mergedColors==module
+verboseScatterplot(abs(geneModuleMembership[moduleGenes,column]),
+abs(geneTraitSignificance[moduleGenes,1]),
+xlab = paste("Module Membership in", module, "module"),
+ylab = "Gene significance for body weight",
+main = paste("Module membership vs. gene significance\n"),
+cex.main = 1.2, cex.lab = 1.2, cex.axis = 1.2, col = module)
+
+
+##
+ module = "blue"
+ column = match(module, modNames)
+ moduleGenes = moduleColors==module
+ table(moduleGenes)
+moduleGenes
+black_module<-as.data.frame(dimnames(data.frame(datExpr))[[2]][moduleGenes]) 
+names(black_module)="genename"
+
+
+ MM<-abs(geneModuleMembership[moduleGenes,column])
+ GS<-abs(geneTraitSignificance[moduleGenes, 1])
+ c<-as.data.frame(cbind(MM,GS))
+ rownames(c)=black_module$genename
+ head(c)
+black_hub <-abs(c$MM)>0.2&abs(c$GS)>0.2
+table(black_hub)
+##
+
+
+
+
+
+# # Isolate weight from the clinical traits
+# weight = as.data.frame(datTraits$WBC);
+# names(weight) = "weight"
+# # Add the weight to existing module eigengenes
+# MET = orderMEs(cbind(MEs, weight))
+# # Plot the relationships among the eigengenes and the trait
+# par(cex = 0.9)
+# plotEigengeneNetworks(MET, "", marDendro = c(0,4,1,2), marHeatmap = c(5,4,1,2), cex.lab = 0.8, xLabelsAngle
+# = 90)
+
+
+## Multiple factors and traits
+# Isolate weight and Glucose from the clinical traits
+TMB = as.data.frame(datTraits$TMB_NONSYNONYMOUS);
+names(TMB) = "TMB"
+WBC = as.data.frame(datTraits$WBC)
+names(WBC) = "WBC"
+Platelets = as.data.frame(datTraits$Platelets)
+names(Platelets) = "Platelets"
+PB_blast = as.data.frame(datTraits$PB_Blast)
+names(PB_blast)  = "PB_blast"
+BM_Blast = as.data.frame(datTraits$BM_Blast)
+names(BM_Blast) = "BM_Blast"
+
+# Add the weight to existing module eigengenes
+MET = orderMEs(cbind(MEs,TMB,WBC,Platelets,PB_blast,BM_Blast))
+# Plot the relationships among the eigengenes and the trait
+par(cex = 0.9)
+plotEigengeneNetworks(MET, "", marDendro = c(0,4,1,2), marHeatmap = c(5,4,1,2), cex.lab = 0.8, xLabelsAngle
+= 90)
+
+par(cex = 1.0)
+plotEigengeneNetworks(MET, "Eigengene dendrogram", marDendro = c(0,4,2,0),
+plotHeatmaps = FALSE)
+
+
+```
+  
+## Intramodular analysis: identifying genes with high GS and MM
+```{r Intramodular analysis}
+#https://www.nature.com/articles/s41598-022-10652-8
+#https://www.frontiersin.org/articles/10.3389/fgene.2022.921195/full
+#https://www.sciencedirect.com/science/article/pii/S2589004221007999
+#https://stackoverflow.com/questions/73860577/how-to-draw-custom-labels-by-factors-to-a-ggnet-plot
+#https://edu.isb-sib.ch/pluginfile.php/158/course/section/65/00_WGCNA_tutorial.Rmd
+#IDENTIFYING THERAPEUTIC TARGETS
+#IN GLIOMA USING INTEGRATED NETWORK ANALYSIS Liisi Laaniste
+#https://elifesciences.org/articles/80322
+
+
+# geneModuleMembership = as.data.frame(cor(datExpr, MEs, use = "p"))
+# MMPvalue = as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples))
+# names(geneModuleMembership) = paste("M", names(MEs), sep="")
+# names(MMPvalue) = paste("p.M", names(MEs), sep="")
+# MMPadj = mt.rawp2adj(corPvalueStudent(as.matrix(geneModuleMembership), nSamples), proc="BH")
+# 
+# temp2 <- MMPadj$adjp[order(MMPadj$index),]
+# MMPadj <- matrix(unlist(temp2[,2]),ncol=14,byrow=FALSE)
+# colnames(MMPadj) <- paste0(colnames(MMPvalue),"_BH") 
+# 
+# kme=data.frame(moduleColor, geneModuleMembership,MMPvalue,stringsAsFactors = F)
+# kme_export <- data.frame(ID=rownames(kme),kme)
+# 
+# 
+# Kin<-intramodularConnectivity.fromExpr(datExpr, mergedColors)
+# head(Kin)
+# kme_export <- data.frame(ID=rownames(kme),kme)
+
+#https://edu.sib.swiss/pluginfile.php/158/course/section/65/FemaleLiver-03-relateModsToExt_SIB2016_edited.R
+#http://www.bioinformatics.org/mtrna-seq/data/WGCNA.r
+#https://www.jianshu.com/p/33230e240460
+#http://haplotein.biochem.emory.edu/lab/srikant/microgliaNet/SeyfriedBV2/BV2cells_4conditions_12samp_CopyNumber_NO-OldhamSampleNetworks_NO-Regression_StaticTreeCut.R
+
+#https://bmcmedgenet.biomedcentral.com/articles/10.1186/s12881-019-0832-9
+
+GS1=as.numeric(cor(weight,datExpr, use="p"))
+GeneSignificance=abs(GS1)
+# Next module significance is defined as average gene significance.
+ModuleSignificance=tapply(GeneSignificance, mergedColors, mean, na.rm=T)
+
+ADJ1=abs(cor(datExpr,use="p"))^6
+Alldegrees1=intramodularConnectivity(ADJ1, mergedColors)
+head(Alldegrees1)
+
+
+
+colorlevels=unique(mergedColors)
+sizeGrWindow(9,6)
+par(mfrow=c(2,as.integer(0.5+length(colorlevels)/2)))
+par(mar = c(4,5,3,1))
+for (i in c(1:length(colorlevels)))
+{
+  whichmodule=colorlevels[[i]];
+  restrict1 = (mergedColors==whichmodule);
+  verboseScatterplot(Alldegrees1$kWithin[restrict1],
+                     GeneSignificance[restrict1], col=mergedColors[restrict1],
+                     main=whichmodule,
+                     xlab = "Connectivity", ylab = "Gene Significance", abline = TRUE)
+}
+
+
+
+
+## save modules
+
+# cytoDir="CytoscapeInput"
+# dir.create(cytoDir)
+# for (mod in 1:nrow(table(moduleColors)))
+# {  
+#   modules = names(table(moduleColors))[mod]  
+#   probes = names(datExpr0)
+#   inModule = (moduleColors == modules)
+#   modProbes = probes[inModule]
+#   modGenes = modProbes  
+#   modTOM = TOM[inModule, inModule] 
+#   dimnames(modTOM) = list(modProbes, modProbes)
+#   edges_File = paste("CytoscapeInput-edges-", modules , ".txt", sep="")
+#   nodes_File = paste("CytoscapeInput-nodes-", modules, ".txt", sep="")
+#   outEdge=paste(cytoDir,edges_File,sep="\\")
+#   outNode=paste(cytoDir,nodes_File,sep="\\")
+#   cyt = exportNetworkToCytoscape(modTOM,
+#                                  edgeFile = outEdge,
+#                                  nodeFile = outNode,
+#                                  weighted = TRUE,
+#                                  threshold = 0.02,
+#                                  nodeNames = modProbes,
+#                                  altNodeNames = modGenes,
+#                                  nodeAttr = moduleColors[inModule])
+# }
+
+```
+
+
+## Filter kwithin
+```{r kwithin}
+AD <- Alldegrees1 %>% rownames_to_column("gene")
+head(AD)
+degre_color = inner_join(AD,d1)
+head(degre_color)
+
+# flter grey 
+degre_color_grey <- degre_color %>% 
+  filter(!grepl('^grey', colors))
+
+small_set = head(degre_color_grey,1500)
+s1 <- small_set %>% select(gene,colors)
+names(s1)[2] = "module"
+s2 <- graph_from_data_frame(s1)
+
+```
+
+
+## Calculate the connectivity of all genes in the module, and screen hub genes
+```{r Connectivity_of_all_gene}
+#https://dfzljdn9uc3pi.cloudfront.net/2020/8312/1/TCGA_code.R
+#https://www.nature.com/articles/s41598-020-74391-4
+#https://horvath.genetics.ucla.edu/html/Class100B/Lecture1.pdf
+#concept
+#https://github.com/pgugger/TranscriptomeAnalysis/blob/master/Exercise3.md
+#https://dfzljdn9uc3pi.cloudfront.net/2020/8907/1/S8.R
+
+datKME=signedKME(datExpr, MEs, outputColumnName="MM.")
+# Display the first few rows of the data frame
+head(datKME)
+##Finding genes with high gene significance and high intramodular connectivity in
+# interesting modules
+# abs(GS1)> .9 You can adjust the parameters according to the actual situation.
+# abs(datKME$MM.black)>.8 At least greater than >0.8
+FilterGenes= abs(GS1)> .8 & abs(datKME$MM.black)>.8
+table(FilterGenes)
+
+plotMEpairs(MEs,y=datTraits$WBC)
+
+```
+
+
+## Hubplot using kme
+```{r kme_hubplot}
+#qpcr gene
+#DNMT3B,PARP3,LDOC1,NRIP1,PTK2,SOCS2,KLF5,MLLT3,CADM1,IRF8,PRDM1,NR4A3,SIRT2,CREB5,NF1A,APOBEC3H
+#https://www.nature.com/articles/s41598-021-81952-8
+#hubgene selection
+#https://www.sciencedirect.com/science/article/pii/S2589004221004193
+#https://wjso.biomedcentral.com/articles/10.1186/s12957-021-02384-2
+#https://www.nature.com/articles/s41598-021-03946-w
+
+#WGCNA cox
+#https://www.cell.com/molecular-therapy-family/oncolytics/fulltext/S2372-7705(21)00176-5
+#https://www.nature.com/articles/s41598-022-24306-2
+#module membership filter
+#https://www.nature.com/articles/s41598-022-24306-2
+#Target Gene Identification
+#https://fuzzyatelin.github.io/bioanth-stats/module-F21-Group1/module-F21-Group1.html
+#Using the gene significance you can identify genes that have a high significance for weight. Using the module membership measures you can identify genes with high module membership in interesting modules. 
+
+
+```
+
+
+
+
+## Filter significant genes based on traits
+```{r trait_gene_significance}
+## Multiple factors and traits
+TMB = as.data.frame(datTraits$TMB_NONSYNONYMOUS);
+names(TMB) = "TMB"
+WBC = as.data.frame(datTraits$WBC)
+names(WBC) = "WBC"
+Platelets = as.data.frame(datTraits$Platelets)
+names(Platelets) = "Platelets"
+PB_blast = as.data.frame(datTraits$PB_Blast)
+names(PB_blast)  = "PB_blast"
+BM_Blast = as.data.frame(datTraits$BM_Blast)
+names(BM_Blast) = "BM_Blast"
+
+
+#Calculate the gene significance and associated p-values with TMB
+geneTraitSignificance_TMB = as.data.frame(cor(datExpr, TMB, use = "p"))
+GSPvalue_TMB  = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance_TMB), nSamples))
+names(geneTraitSignificance_TMB) = paste("GS.", names(TMB), sep="")
+names(GSPvalue_TMB) = paste("p.GS.", names(TMB), sep="")
+GSPvalue_TMB_gene <- GSPvalue_TMB %>% rownames_to_column("gene")
+Filter_TMB = GSPvalue_TMB_gene[GSPvalue_TMB_gene$p.GS.TMB <0.05,]
+write_tsv(Filter_TMB,"GSPvalue_TMB_gene.txt")
+
+#Calculate the gene significance and associated p-values with WBC
+geneTraitSignificance_WBC = as.data.frame(cor(datExpr, WBC, use = "p"))
+GSPvalue_WBC  = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance_WBC), nSamples))
+names(geneTraitSignificance_WBC) = paste("GS.", names(WBC), sep="")
+names(GSPvalue_WBC) = paste("p.GS.", names(WBC), sep="")
+GSPvalue_WBC_gene <- GSPvalue_WBC %>% rownames_to_column("gene")
+Filter_WBC = GSPvalue_WBC_gene[GSPvalue_WBC_gene$p.GS.WBC <0.05,]
+write_tsv(Filter_WBC,"GSPvalue_WBC_gene.txt")
+
+
+#Calculate the gene significance and associated p-values with Platelets
+geneTraitSignificance_Platelets = as.data.frame(cor(datExpr, Platelets, use = "p"))
+GSPvalue_Platelets  = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance_Platelets), nSamples))
+names(geneTraitSignificance_Platelets) = paste("GS.", names(Platelets), sep="")
+names(GSPvalue_Platelets) = paste("p.GS.", names(Platelets), sep="")
+GSPvalue_Platelets_gene <- GSPvalue_Platelets %>% rownames_to_column("gene")
+Filter_Platelets = GSPvalue_Platelets_gene[GSPvalue_Platelets_gene$p.GS.Platelets <0.05,]
+
+write_tsv(Filter_Platelets,"GSPvalue_Platelets_gene.txt")
+
+
+#Calculate the gene significance and associated p-values with PB_blast
+geneTraitSignificance_PB_blast = as.data.frame(cor(datExpr, PB_blast, use = "p"))
+GSPvalue_PB_blast  = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance_PB_blast), nSamples))
+names(geneTraitSignificance_PB_blast) = paste("GS.", names(PB_blast), sep="")
+names(GSPvalue_PB_blast) = paste("p.GS.", names(PB_blast), sep="")
+GSPvalue_PB_blast_gene<- GSPvalue_PB_blast %>% rownames_to_column("gene")
+
+Filter_PB_blast = GSPvalue_PB_blast_gene[GSPvalue_PB_blast_gene$p.GS.PB_blast <0.05,]
+
+write_tsv(Filter_PB_blast,"GSPvalue_PB_blast_gene.txt")
+
+
+
+#Calculate the gene significance and associated p-values with BM_Blast
+geneTraitSignificance_BM_Blast = as.data.frame(cor(datExpr, BM_Blast, use = "p"))
+GSPvalue_BM_Blast  = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance_BM_Blast), nSamples))
+names(geneTraitSignificance_BM_Blast) = paste("GS.", names(BM_Blast), sep="")
+names(GSPvalue_BM_Blast) = paste("p.GS.", names(BM_Blast), sep="")
+GSPvalue_BM_Blast_gene<- GSPvalue_BM_Blast  %>% rownames_to_column("gene")
+Filter_BM_Blast = GSPvalue_BM_Blast_gene[GSPvalue_BM_Blast_gene$`p.GS.datTraits$BM_Blast` <0.05,]
+
+write_tsv(Filter_BM_Blast,"GSPvalue_BM_Blast_gene.txt")
+
+#https://www.nature.com/articles/s41598-021-03946-w
+
+#https://sphweb.bumc.bu.edu/otlt/mph-modules/bs/bs704_survival/BS704_Survival_print.html
+#https://statisticsbyjim.com/probability/hazard-ratio/
+#https://real-statistics.com/survival-analysis/kaplan-meier-procedure/log-rank-test/
+#https://stats.stackexchange.com/questions/362381/logrank-p-value-for-2-groups
+
+#TMB_GENEqpcr
+#GUSBP5,DGKE,ABCG1,RAB32,SLC31A2,MYLK,PRKCH,PRSS16,SYNE1,TSPAN5,HNRNPA1P34,SLC18B1,MIAT,CCR4,MAN1C1,CASP1,OPTN,ZNF154,LTBP3,GJC2,CRIP1,
+#PIRT,LTB4R,SELPLG,SH3BGRL3,GVINP1,CXCR3,FAM124B,LRRC61,RAB37,RBMX2P1,SLC9A7,ZBED6CL,ZMIZ1,PPM1M,SLC31A2,TBC1D2,ATXN1,A2M-AS1,CSF3R,
+#KLRG1,SGCD,STAR,CCR10,SNPH,ATP8A1,HSPA5,LRBA,P4HB,SLC12A8,DBNDD1,IL17RC,INHBB,LGALS9,PWWP2B,TTC22,IGF1,FAR2P2,IL6ST,PIWIL4,SH2D2A.
+#SLC22A5,SPATA9,STAP2,DOK2,ZNF385A,AIF1,CFL1,CHCHD10,EMP3,ENDOG,GPX1,MCOLN1,MVP,PKM,PNPLA6,S100A4,SLC16A3,AHNAK,CARD16,ITGAL,FTH1,PEA15,
+#RAB3D,RINL,SMAP2,CYTH4,ELK3,HIVEP3,PECAM1,NUP210,PAK1,KBTBD8,MICALL2,BMI1,CHIC1,GAPDHP39,GPI,RAB32,RECK,MORN2,TPD52L1,CCND2,COMTD1,HLX,
+#TBC1D1,EAF2,ZFHX3,ARHGAP4,
+
+
+## higlly significant set
+# CHST7
+# CLEC2B
+# CPA4
+# CRYGN
+# ECSCR
+# ETS2
+# GALNT3
+# HYOU1
+# PLCB2
+# PNCK
+# RTP4
+# TMEM52
+# MEGF9
+# PNOC
+# TRIM55
+
+
+```
+
+
+
+
+## Intramodular analysis and classification 
+
+```{r}
+#https://github.com/pgugger/TranscriptomeAnalysis/blob/master/Exercise3.md
+#https://github.com/Richarizardd/Computational-Biology-Projects/blob/master/Weighted%20Gene%20Correlation%20Network%20Analysis/WGCNA1.Rmd
+#https://github.com/cnidimmunitylab/sctld_transcriptomics_2021/blob/main/ofav_wgcna_updated.Rmd
+
+
+```
+
+
+## Moduel_eigengene_pCA
+
+```{r PCA_module_eigengene}
+condition_Module = metadata %>% select(sample,RISK_CYTO)
+condition_Module_PCA = condition_Module %>% column_to_rownames(var = "sample")
+pca <-  pca((RNA_seq),metadata = condition_Module_PCA,removeVar = FALSE,scale = TRUE)########### run this 
+pca_rota <- as.data.frame(pca$rotated) %>% rownames_to_column("name")
+tibble.MEs <- add_rownames(MEs, var = "name")
+pca_meta <- as.data.frame(pca$metadata)  %>% rownames_to_column("name")
+
+pca1 <- as_tibble(pca_rota) %>%
+  left_join(tibble.MEs, by = "name")
+pca2 <- as.tibble(pca1) %>% left_join(pca_meta,by ="name")
+
+pca.blue <- ggplot(pca2, aes(x = PC3, y = PC4,color = RISK_CYTO)) +
+  geom_point(aes(size = MEblue)) +
+  ggtitle("MEblue") +
+ # scale_color_viridis() +
+  theme_classic(base_size = 30)+
+ guides(colour = guide_legend(override.aes = list(size=10)))
+  #theme(plot.title = element_text(hjust = 0.5), legend.title=element_blank()) 
+pca.blue
+
+pca.turquoise <- ggplot(pca2, aes(x = PC3, y = PC4,color = RISK_CYTO)) +
+  geom_point(aes(size = MEturquoise)) +
+  ggtitle("MEturquoise") +
+ # scale_color_viridis() +
+  theme_classic(base_size = 30)+
+ guides(colour = guide_legend(override.aes = list(size=10)))
+  #theme(plot.title = element_text(hjust = 0.5), legend.title=element_blank()) 
+pca.turquoise
+
+
+pca.midnightblue <- ggplot(pca2, aes(x = PC3, y = PC4,color = RISK_CYTO)) +
+  geom_point(aes(size = MEmidnightblue)) +
+  ggtitle("MEmidnightblue") +
+ # scale_color_viridis() +
+  theme_classic(base_size = 30)+
+ guides(colour = guide_legend(override.aes = list(size=10)))
+  #theme(plot.title = element_text(hjust = 0.5), legend.title=element_blank()) 
+pca.midnightblue
+
+
+pca.greenyellow <- ggplot(pca2, aes(x = PC3, y = PC4,color = RISK_CYTO)) +
+  geom_point(aes(size = MEgreenyellow)) +
+  ggtitle("MEgreenyellow") +
+ # scale_color_viridis() +
+  theme_classic(base_size = 30)+
+ guides(colour = guide_legend(override.aes = list(size=10)))
+  #theme(plot.title = element_text(hjust = 0.5), legend.title=element_blank()) 
+pca.greenyellow
+
+pca.pink <- ggplot(pca2, aes(x = PC3, y = PC4,color = RISK_CYTO)) +
+  geom_point(aes(size = MEpink)) +
+  ggtitle("MEpink") +
+ # scale_color_viridis() +
+  theme_classic(base_size = 30)+
+ guides(colour = guide_legend(override.aes = list(size=10)))
+  #theme(plot.title = element_text(hjust = 0.5), legend.title=element_blank()) 
+pca.pink
+
+
+
+pca.tan <- ggplot(pca2, aes(x = PC3, y = PC4,color = RISK_CYTO)) +
+  geom_point(aes(size = MEtan)) +
+  ggtitle("MEtan") +
+ # scale_color_viridis() +
+  theme_classic(base_size = 30)+
+ guides(colour = guide_legend(override.aes = list(size=10)))
+  #theme(plot.title = element_text(hjust = 0.5), legend.title=element_blank()) 
+pca.tan
+
+
+pca.red <- ggplot(pca2, aes(x = PC3, y = PC4,color = RISK_CYTO)) +
+  geom_point(aes(size = MEred)) +
+  ggtitle("MEred") +
+ # scale_color_viridis() +
+  theme_classic(base_size = 30)+
+ guides(colour = guide_legend(override.aes = list(size=10)))
+  #theme(plot.title = element_text(hjust = 0.5), legend.title=element_blank()) 
+pca.red
+
+
+pca.purple <- ggplot(pca2, aes(x = PC3, y = PC4,color = RISK_CYTO)) +
+  geom_point(aes(size = MEpurple)) +
+  ggtitle("MEpurple") +
+ # scale_color_viridis() +
+  theme_classic(base_size = 30)+
+ guides(colour = guide_legend(override.aes = list(size=10)))
+  #theme(plot.title = element_text(hjust = 0.5), legend.title=element_blank()) 
+pca.purple
+
+
+pca.magenta <- ggplot(pca2, aes(x = PC3, y = PC4,color = RISK_CYTO)) +
+  geom_point(aes(size = MEmagenta)) +
+  ggtitle("MEmagenta") +
+ # scale_color_viridis() +
+  theme_classic(base_size = 30)+
+ guides(colour = guide_legend(override.aes = list(size=10)))
+  #theme(plot.title = element_text(hjust = 0.5), legend.title=element_blank()) 
+pca.magenta
+
+
+
+#https://www.biostars.org/p/9486324/
+#https://github.com/vpetrosyan/biomarkers_chemotherapy
+# turn categorical data to factor
+metadata$Stage <- factor(metadata$Stage,
+  levels = c('stage1','stage2','stage3','stage4'))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

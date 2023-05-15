@@ -1,0 +1,951 @@
+---
+title: "Figure1"
+author: "KCM"
+date: "4/11/2022"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+code_folding: hide
+---
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+<style>
+body {
+text-align: justify}
+</style>
+
+
+
+
+```{r eval=!exists(".standalone"), message=FALSE, include=!exists(".standalone")}
+plotDir = ifelse(exists(".standalone"), "", "part1/")
+if(plotDir!="") if(!file.exists(plotDir)) dir.create(plotDir)
+knitr::opts_chunk$set(fig.path=plotDir, dev=c("png", "pdf"))
+knitr::opts_chunk$set(dpi=600,fig.width=15)
+
+
+
+
+library(dplyr)
+library(ggplot2)
+#library(scales)
+#library(vcd)
+#library(waffle)
+#library(magrittr)
+#library(hrbrthemes)
+library(ggrepel)
+#library(forcats)
+library(readr)
+library(cowplot)
+#library(maftools)
+library(tidyverse)
+library(ggnewscale)
+library(cowplot)
+#library(PCAtools)
+library(ggstatsplot)
+library(maftools)
+
+options(stringsAsFactors=FALSE)
+```
+
+```{r echo=FALSE}
+#set the global ggplot theme
+theme_set(theme_bw() + theme(axis.text = element_text(size=12), 
+                             axis.title = element_text(size=14),
+                             plot.title = element_text(size = 15, hjust =0.5, face="bold")))
+```
+
+
+# TCGA clinical data 
+
+
+## TCGA cohort mutational and clinical analysis.
+
+ 173 patients with AML were characterized into various subtypes as per FAB classification. The FAB classification groups are distributed 147 AML patient into M0 (n=15), M1 (n=36), M2 (n=37), M3 (n=15), M4 (n=29) and M5 (n=15). In order tTo summarize the variants we used maftools to find out the underlying mutation and the variant associated with the sample types.The  The plot displays significantly mutated genes (FDR < 0.1) identified by MutSigCV algorithm in the TCGA AML cohort. Comutation plot showing alterations in different Transcription factors and epigenetic factors Genes are sorted by mutational frequency, and samples are sorted and ordered according to tumor histology, thereby differentiating the mutational spectrum between and within subtypes of TCGA AML. The transition and transversion plot summarizes SNVs into six categories. C>T is the most dominant SNVs in this AML cohort. In terms of variant classification missense mutation is the most dominant type while SNP dominates the variant type.
+ 
+
+```{r MAftool}
+
+#path to TCGA LAML MAF file
+laml.maf = system.file('extdata', 'tcga_laml.maf.gz', package = 'maftools') 
+#clinical information containing survival information and histology. This is optional
+laml.clin = system.file('extdata', 'tcga_laml_annot.tsv', package = 'maftools') 
+
+laml = read.maf(maf = laml.maf, clinicalData = laml.clin)
+
+laml
+#Shows sample summry.
+getSampleSummary(laml)
+#Shows gene summary.
+getGeneSummary(laml)
+#shows clinical data associated with samples
+getClinicalData(laml)
+#Shows all fields in MAF
+getFields(laml)
+
+
+plotmafSummary(maf = laml,)
+
+```
+
+## Oncoplot of top mutated genes
+
+```{r Oncoplot}
+ oncoplot(maf = laml, top = 25)
+
+
+```
+
+## Somaticinteraction of top mutated genes
+
+
+```{r Somaticinteraction}
+ somaticInteractions(maf = laml, top = 25, pvalue = c(0.05, 0.1))
+
+```
+
+
+## Subtype and their association with the clinical parameters
+
+```{r data read}
+
+clinical = read.csv("TCGA_NCOM_clinical_dfs.txt",sep = "\t")
+head(clinical)
+Covariates = clinical %>% select(TCGA_ID,Wbc,HB,Platelet,PB_Blasts,BM_Blasts)
+names(Covariates)[1] = "PATIENT_ID"
+
+class_info = read.csv("data_clinical_patient.txt",sep = "\t",skip = 4)
+head(class_info)
+names(class_info)[1] = "PATIENT_ID"
+subtype = class_info %>% select(PATIENT_ID,FAB,AGE,RISK_CYTO)
+names(subtype)[1] = "PATIENT_ID"
+
+
+TMB = read.csv("..//laml_tcga_pub/data_clinical_sample.txt",skip = 4,sep = "\t")
+TMB1 <- TMB %>% select(PATIENT_ID,TMB_NONSYNONYMOUS)
+merge_clinical_class = inner_join(Covariates,subtype)
+merge_clinical_class_TMB = inner_join(merge_clinical_class,TMB1)
+```
+
+```{r merge samples}
+#dat <- merge_clinical_class_TMB %>% select(FAB,AGE,Wbc,Platelet,HB,PB_Blasts,BM_Blasts)
+
+## transform data
+
+dat1 <- 
+  merge_clinical_class_TMB %>% 
+  mutate(WBC =  log2(Wbc+1),
+         Platelets = log2(Platelet+1),
+         PB_Blast = log2(PB_Blasts+1),
+         BM_Blast = log2(BM_Blasts+1))
+
+dat1$FAB <- as.factor(dat1$FAB)
+dat1$RISK_CYTO <- as.factor(dat1$RISK_CYTO)
+
+
+```
+
+## Age distribution
+
+```{r Age_distribution}
+#head(dat)
+ggbetweenstats( # independent samples
+  data = dat1,
+  x = FAB,
+  y = AGE,
+  plot.type = "box", # for boxplot
+  type = "nonparametric", # for wilcoxon
+  centrality.plotting = FALSE # remove median
+)
+```
+
+## WBC distribution
+
+
+```{r WBC distribution}
+ggbetweenstats( # independent samples
+  data = dat1,
+  x = FAB,
+  y = WBC,
+  plot.type = "box", # for boxplot
+  type = "nonparametric", # for wilcoxon
+  centrality.plotting = FALSE # remove median
+)
+```
+
+## TMB distribution
+
+```{r TMB distribution}
+
+ggbetweenstats( # independent samples
+  data = dat1,
+  x = FAB,
+  y =  TMB_NONSYNONYMOUS,
+  plot.type = "box", # for boxplot
+  type = "nonparametric", # for wilcoxon
+  centrality.plotting = FALSE # remove median
+)
+```
+
+
+## Blast distribution 
+
+```{r Blast distribution }
+
+ggbetweenstats( # independent samples
+  data = dat1,
+  x = FAB,
+  y = BM_Blast,
+  plot.type = "box", # for boxplot
+  type = "nonparametric", # for wilcoxon
+  centrality.plotting = FALSE # remove median
+)
+```
+
+## Peripheral blast distribution 
+```{r Peripheral blast distribution }
+ggbetweenstats( # independent samples
+  data = dat1,
+  x = FAB,
+  y = PB_Blast,
+  plot.type = "box", # for boxplot
+  type = "nonparametric", # for wilcoxon
+  centrality.plotting = FALSE # remove median
+)
+```
+
+## Platelets  distribution 
+```{r Platelets  distribution }
+ggbetweenstats( # independent samples
+  data = dat1,
+  x = FAB,
+  y = Platelets,
+  plot.type = "box", # for boxplot
+  type = "nonparametric", # for wilcoxon
+  centrality.plotting = FALSE # remove median
+)
+```
+
+
+
+
+
+
+# Correaltion between clinical factors
+## Clinical Correaltion statistics : Age and WBC
+
+```{r Age_WBC,fig.width=10, fig.height=20 }
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(FAB)<9),
+  x = AGE,
+  y = WBC,
+  grouping.var = FAB,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Wbc and Age",
+    caption = ""
+  ),
+  plotgrid.args = list(nrow = 4, ncol = 2)
+)
+
+```
+
+## Clinical Correaltion statistics : Age and TMB
+
+
+
+```{r Age_TMB, fig.width=10, fig.height=20}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(FAB)<9),
+  x = AGE,
+  y = TMB_NONSYNONYMOUS,
+  grouping.var = FAB,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Wbc and Age",
+    caption = ""
+  ),
+  plotgrid.args = list(nrow = 4, ncol = 2)
+)
+```
+
+
+## Clinical Correaltion statistics : Age and Platelets
+
+```{r Age_Platelets,fig.width=10, fig.height=20}
+
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(FAB)<9),
+  x = AGE,
+  y = Platelets,
+  grouping.var = FAB,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Age and Platelets",
+    caption = ""
+  ),
+  plotgrid.args = list(nrow = 4, ncol = 2)
+)
+
+```
+
+## Clinical Correaltion statistics : Age and Peripheral blood blast
+```{r Age_PB_blast,fig.width=10, fig.height=20}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(FAB)<9),
+  x = AGE,
+  y = PB_Blast,
+  grouping.var = FAB,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Age and Peripheral blood blast",
+    caption = ""
+  ),
+  plotgrid.args = list(nrow = 4, ncol = 2)
+)
+```
+
+## Clinical Correaltion statistics : Age and Bonemarrow blast
+
+```{r Age_Bonemarrow_blast,fig.width=10, fig.height=20}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(FAB)<9),
+  x = AGE,
+  y = BM_Blast,
+  grouping.var = FAB,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Age and Peripheral blood blast",
+    caption = ""
+  ),
+  plotgrid.args = list(nrow = 4, ncol = 2)
+)
+
+```
+
+
+## Clinical Correaltion statistics : TMB and WBC
+
+```{r TMB_WBC,fig.width=10, fig.height=20 }
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(FAB)<9),
+  x =  TMB_NONSYNONYMOUS ,
+  y = WBC,
+  grouping.var = FAB,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Age and Peripheral blood blast",
+    caption = ""
+  ),
+  plotgrid.args = list(nrow = 4, ncol = 2)
+)
+```
+
+
+## Clinical Correaltion statistics : TMB and Platelets
+
+```{r TMB_Platelets,fig.width=10, fig.height=20 }
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(FAB)<9),
+  x =  TMB_NONSYNONYMOUS ,
+  y = Platelets,
+  grouping.var = FAB,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Age and Peripheral blood blast",
+    caption = ""
+  ),
+  plotgrid.args = list(nrow = 4, ncol = 2)
+)
+```
+
+
+
+## Clinical Correaltion statistics : TMB and PB Blast
+
+```{r TMB_PBblast,fig.width=10, fig.height=20}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(FAB)<9),
+  x =  TMB_NONSYNONYMOUS ,
+  y = PB_Blast,
+  grouping.var = FAB,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Age and Peripheral blood blast",
+    caption = ""
+  ),
+  plotgrid.args = list(nrow = 4, ncol = 2)
+)
+```
+
+
+## Clinical Correaltion statistics : TMB and BM_Blast
+
+```{r TMB_BM_blast,,fig.width=10, fig.height=20}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(FAB)<9),
+  x =  TMB_NONSYNONYMOUS ,
+  y =  BM_Blast,
+  grouping.var = FAB,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Age and Peripheral blood blast",
+    caption = ""
+  ),
+  plotgrid.args = list(nrow = 4, ncol = 2)
+)
+```
+
+## Clinical Correaltion statistics : WBC and Platelets
+
+```{r  WBC_platelets,fig.width=10, fig.height=20}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(FAB)<9),
+  x = WBC,
+  y =  Platelets ,
+  grouping.var = FAB,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Age and Peripheral blood blast",
+    caption = ""
+  ),
+  plotgrid.args = list(nrow = 4, ncol = 2)
+)
+```
+
+
+## Clinical Correaltion statistics : WBC and PB_Blast
+```{r WBC_PB_blast,fig.width=10, fig.height=20}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(FAB)<9),
+  x = WBC,
+  y =  PB_Blast ,
+  grouping.var = FAB,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Age and Peripheral blood blast",
+    caption = ""
+  ),
+  plotgrid.args = list(nrow = 4, ncol = 2)
+)
+```
+
+## Clinical Correaltion statistics : WBC and BM_Blast
+```{r WBC_BM_blast ,fig.width=10, fig.height=20}
+
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(FAB)<9),
+  x = WBC,
+  y =  BM_Blast ,
+  grouping.var = FAB,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Age and Peripheral blood blast",
+    caption = ""
+  ),
+  plotgrid.args = list(nrow = 4, ncol = 2)
+)
+
+```
+
+
+## Clinical Correaltion statistics : Platelets and PB_Blast
+
+
+```{r Platelets_PB_blast ,fig.width=10, fig.height=20}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(FAB)<9),
+  x = Platelets,
+  y =  PB_Blast ,
+  grouping.var = FAB,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Age and Peripheral blood blast",
+    caption = ""
+  ),
+  plotgrid.args = list(nrow = 4, ncol = 2)
+)
+```
+
+
+## Clinical Correaltion statistics : Platelets and BM_Blast
+```{r  Platelets_BM_blast ,fig.width=10, fig.height=20}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(FAB)<9),
+  x = Platelets,
+  y =  PB_Blast ,
+  grouping.var = FAB,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Age and Peripheral blood blast",
+    caption = ""
+  ),
+  plotgrid.args = list(nrow = 4, ncol = 2)
+)
+```
+
+
+## Clinical Correaltion statistics : PB_Blast  and BM_Blast
+
+```{r PB_blast_BM_blast ,fig.width=10, fig.height=20}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(FAB)<9),
+  x = PB_Blast,
+  y =  BM_Blast ,
+  grouping.var = FAB,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Age and Peripheral blood blast",
+    caption = ""
+  ),
+  plotgrid.args = list(nrow = 4, ncol = 2)
+)
+
+```
+
+
+# Risk cytogenetic analysis 
+
+## Risk cytogenetic distribution : WBC
+
+
+```{r Risk_Cyto_WBC}
+ggbetweenstats( # independent samples
+  data = dat1,
+  x = RISK_CYTO,
+  y = WBC,
+  plot.type = "box", # for boxplot
+  type = "nonparametric", # for wilcoxon
+  centrality.plotting = FALSE # remove median
+)
+```
+
+
+## Risk cytogenetic distribution : TMB_NONSYNONYMOUS
+
+```{r Riskc_Cyto_TMB_NONSYNONYMOUS}
+
+ggbetweenstats( # independent samples
+  data = dat1,
+  x = RISK_CYTO,
+  y = TMB_NONSYNONYMOUS,
+  plot.type = "box", # for boxplot
+  type = "nonparametric", # for wilcoxon
+  centrality.plotting = FALSE # remove median
+)
+```
+
+## Risk cytogenetic distribution : Platelets
+
+```{r Risk_cyto_Platelets}
+ggbetweenstats( # independent samples
+  data = dat1,
+  x = RISK_CYTO,
+  y = Platelets,
+  plot.type = "box", # for boxplot
+  type = "nonparametric", # for wilcoxon
+  centrality.plotting = FALSE # remove median
+)
+```
+
+## Risk cytogenetic distribution : PB_Blast
+
+```{r Risk_Cyto_PB_Blast}
+ggbetweenstats( # independent samples
+  data = dat1,
+  x = RISK_CYTO,
+  y = PB_Blast,
+  plot.type = "box", # for boxplot
+  type = "nonparametric", # for wilcoxon
+  centrality.plotting = FALSE # remove median
+)
+```
+
+
+## Risk cytogenetic distribution : BM_Blast
+```{r Risk_Cyto_BM_Blast}
+ggbetweenstats( # independent samples
+  data = dat1,
+  x = RISK_CYTO,
+  y = BM_Blast,
+  plot.type = "box", # for boxplot
+  type = "nonparametric", # for wilcoxon
+  centrality.plotting = FALSE # remove median
+)
+```
+
+
+# Cytogenetic risk and correlation
+
+
+## Cytogenetic risk and correlation: Age_WBC
+
+```{r Risk_Cyto_AGE_WBC}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(RISK_CYTO)<5),
+  x = AGE,
+  y = WBC,
+  grouping.var = RISK_CYTO,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Wbc and Age",
+    #caption = "Source: stackoverflow"
+  ),
+  plotgrid.args = list(nrow = 2, ncol = 2)
+)
+```
+
+
+## Cytogenetic risk and correlation: Age_TMB_NONSYNONYMOUS
+
+```{r Risk_Cyto_Age_TMB_NONSYNONYMOUS}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(RISK_CYTO)<5),
+  x = AGE,
+  y = TMB_NONSYNONYMOUS,
+  grouping.var = RISK_CYTO,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Wbc and Age",
+    #caption = "Source: stackoverflow"
+  ),
+  plotgrid.args = list(nrow = 2, ncol = 2)
+)
+```
+
+## Cytogenetic risk and correlation: Age_Platelets
+
+```{r Risk_Cyto_Age_Platelets}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(RISK_CYTO)<5),
+  x = AGE,
+  y = Platelets,
+  grouping.var = RISK_CYTO,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Wbc and Age",
+    #caption = "Source: stackoverflow"
+  ),
+  plotgrid.args = list(nrow = 2, ncol = 2)
+)
+
+```
+
+## Cytogenetic risk and correlation: Age_PB_Blast
+
+```{r Risk_Cyto_Age_PB_Blast}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(RISK_CYTO)<5),
+  x = AGE,
+  y = PB_Blast,
+  grouping.var = RISK_CYTO,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Wbc and Age",
+    #caption = "Source: stackoverflow"
+  ),
+  plotgrid.args = list(nrow = 2, ncol = 2)
+)
+```
+
+
+## Cytogenetic risk and correlation: Age_BM_Blast
+
+```{r Risk_Cyto_Age_BM_Blast}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(RISK_CYTO)<5),
+  x = AGE,
+  y = BM_Blast,
+  grouping.var = RISK_CYTO,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Wbc and Age",
+    #caption = "Source: stackoverflow"
+  ),
+  plotgrid.args = list(nrow = 2, ncol = 2)
+)
+```
+
+
+## Cytogenetic risk and correlation: TMB_NONSYNONYMOUS_WBC
+```{r Risk_Cyto_TMB_NONSYNONYMOUS_WBC}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(RISK_CYTO)<5),
+  x = TMB_NONSYNONYMOUS,
+  y = WBC,
+  grouping.var = RISK_CYTO,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Wbc and Age",
+    #caption = "Source: stackoverflow"
+  ),
+  plotgrid.args = list(nrow = 2, ncol = 2)
+)
+```
+
+
+
+## Cytogenetic risk and correlation: TMB_NONSYNONYMOUS_Platelets
+```{r Risk_Cyto_TMB_NONSYNONYMOUS_Platelets}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(RISK_CYTO)<5),
+  x = TMB_NONSYNONYMOUS,
+  y = Platelets,
+  grouping.var = RISK_CYTO,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Wbc and Age",
+    #caption = "Source: stackoverflow"
+  ),
+  plotgrid.args = list(nrow = 2, ncol = 2)
+)
+```
+
+## Cytogenetic risk and correlation: TMB_NONSYNONYMOUS_PB_Blast
+
+```{r Risk_Cyto_TMB_NONSYNONYMOUS_PB_Blast}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(RISK_CYTO)<5),
+  x = TMB_NONSYNONYMOUS,
+  y = PB_Blast,
+  grouping.var = RISK_CYTO,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Wbc and Age",
+    #caption = "Source: stackoverflow"
+  ),
+  plotgrid.args = list(nrow = 2, ncol = 2)
+)
+
+```
+
+
+## Cytogenetic risk and correlation: TMB_NONSYNONYMOUS_BM_Blast
+
+```{r Risk_Cyto_TMB_NONSYNONYMOUS_BM_Blast}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(RISK_CYTO)<5),
+  x = TMB_NONSYNONYMOUS,
+  y = BM_Blast,
+  grouping.var = RISK_CYTO,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Wbc and Age",
+    #caption = "Source: stackoverflow"
+  ),
+  plotgrid.args = list(nrow = 2, ncol = 2)
+)
+
+```
+
+
+## Cytogenetic risk and correlation: WBC_Platelets
+
+```{r Risk_Cyto_WBC_Platelets}
+
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(RISK_CYTO)<5),
+  x = WBC,
+  y = Platelets,
+  grouping.var = RISK_CYTO,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Wbc and Age",
+    #caption = "Source: stackoverflow"
+  ),
+  plotgrid.args = list(nrow = 2, ncol = 2)
+)
+```
+
+
+## Cytogenetic risk and correlation: WBC_PB_Blast
+```{r Risk_Cyto_WBC_PB_Blast}
+
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(RISK_CYTO)<5),
+  x = WBC,
+  y = PB_Blast,
+  grouping.var = RISK_CYTO,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Wbc and Age",
+    #caption = "Source: stackoverflow"
+  ),
+  plotgrid.args = list(nrow = 2, ncol = 2)
+)
+```
+
+## Cytogenetic risk and correlation: WBC_BM_Blast
+```{r Risk_Cyto_WBC_BM_Blast}
+
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(RISK_CYTO)<5),
+  x = WBC,
+  y = BM_Blast,
+  grouping.var = RISK_CYTO,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Wbc and Age",
+    #caption = "Source: stackoverflow"
+  ),
+  plotgrid.args = list(nrow = 2, ncol = 2)
+)
+```
+
+
+
+## Cytogenetic risk and correlation: Platelets_PB_Blast
+```{r Risk_Cyto_Platelets_PB_Blast}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(RISK_CYTO)<5),
+  x = Platelets,
+  y = PB_Blast,
+  grouping.var = RISK_CYTO,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Wbc and Age",
+    #caption = "Source: stackoverflow"
+  ),
+  plotgrid.args = list(nrow = 2, ncol = 2)
+)
+
+```
+
+## Cytogenetic risk and correlation: Platelets_BM_Blast
+
+
+```{r Risk_Cyto_Platelets_BM_Blast}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(RISK_CYTO)<5),
+  x = Platelets,
+  y = BM_Blast,
+  grouping.var = RISK_CYTO,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Wbc and Age",
+    #caption = "Source: stackoverflow"
+  ),
+  plotgrid.args = list(nrow = 2, ncol = 2)
+)
+```
+
+
+## Cytogenetic risk and correlation: PB_Blast_BM_Blast
+```{r Risk_Cyto_PB_Blast_BM_Blast}
+grouped_ggscatterstats(
+  ## arguments relevant for ggscatterstats
+  data = dat1 %>% filter(as.integer(RISK_CYTO)<5),
+  x = PB_Blast,
+  y = BM_Blast,
+  grouping.var = RISK_CYTO,
+  type = "r",
+  # ggtheme = ggthemes::theme_tufte(),
+  ## arguments relevant for combine_plots
+  annotation.args = list(
+    #title = "Relationship between Wbc and Age",
+    #caption = "Source: stackoverflow"
+  ),
+  plotgrid.args = list(nrow = 2, ncol = 2)
+)
+```
+
+
+
+
+
+
+
+
+
+
+

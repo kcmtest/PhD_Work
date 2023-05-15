@@ -1,0 +1,531 @@
+---
+title: "MOFA_enrichment_low"
+author: "KCM"
+date: "2022-09-01"
+output: 
+  html_document: default
+  word_document: default
+  pdf_document: default
+code_folding: hide
+---
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r eval=!exists(".standalone"), message=FALSE, include=!exists(".standalone")}
+plotDir = ifelse(exists(".standalone"), "", "part1/")
+if(plotDir!="") if(!file.exists(plotDir)) dir.create(plotDir)
+knitr::opts_chunk$set(fig.path=plotDir, dev=c("png", "pdf"))
+knitr::opts_chunk$set(dpi=600,fig.width=15,fig.height = 10)
+
+#legend write up
+##
+#https://www.nature.com/articles/s41467-022-33385-8
+#Proteogenomics refines the molecular classification of chronic lymphocytic leukemia
+
+##
+
+#https://levelup.gitconnected.com/multi-omics-analysis-3857956a7a3d
+#library(MOFAdata)
+library(data.table)
+library(ggplot2)
+library(tidyverse)
+library(reticulate)
+#reticulate::conda_install(c("mofapy2"),envname = "mofa_tool", pip = TRUE)
+#py_install("mofapy", envname = "mofa_tool", method="auto") #https://github.com/bioFAM/MOFA
+use_condaenv(condaenv = "mofa_tool")
+library(MOFA2)
+library(survminer)
+library(maxstat)
+library(gridExtra)
+library(cowplot)
+library(survival)
+library(MOFAdata)
+library(patchwork)
+library(tidyr)
+#library(mofaCLL)
+source("../vars.R")
+source("../utils_vignettes.R")
+
+
+
+```
+
+
+
+# Prepare MOFA object
+```{r data_overview}
+AML_metadata = read.csv("..//map_144_metadata.txt",sep = "\t")
+ 
+ RNA_seq <- read.table("..//Low_hig_gene/rna_seq_gene_methyl_less_thn_one.txt",sep = "\t",strip.white = FALSE,check.names = FALSE,header=TRUE,row.names = 1)
+ #head(RNA_seq)
+ class(RNA_seq)
+ Methylation <- read.table("..//Low_hig_gene/low_std_expr_probe.txt",sep = "\t",strip.white = FALSE,check.names = FALSE,header=TRUE,row.names = 1)
+ #head(Methylation)
+dd <- Methylation
+ #https://stackoverflow.com/questions/9977686/how-to-remove-rows-with-any-zero-value
+ row_sub = apply(dd, 1, function(row) all(row !=0 ))
+ ##Subset as usual
+ d1 <- dd[row_sub,]
+ 
+ #RNA_seq  <- RNA_seq[,genomic_idx2]
+ #genomic_idx1 <- match(rownames(AML_metadata), colnames(d1))
+ #Meth_seq <- d1[,genomic_idx1]
+# library("mixOmics")
+ #https://nbisweden.github.io/workshop_omicsint_ISMBECCB/session_ml/UnsupervisedOMICsIntegration/UnsupervisedOMICsIntegration.html
+ #scBSseq <- Meth_seq
+ #my_nearZeroVar<-nearZeroVar(as.data.frame((scBSseq)))
+ #head(my_nearZeroVar$Metrics)
+ 
+ d1$variance = apply(d1, 1, var)
+ data2 = d1[d1$variance >= quantile(d1$variance, c(.70)), ] #50% most variable genes
+ data2$variance <- NULL
+ dim(data2)
+ 
+ 
+ omics <- list( 
+                  mRNA = as.matrix(RNA_seq),
+                  #Mutations = gene, 
+                  Methylation = as.matrix(data2))
+ 
+  MOFAobject <- create_mofa_from_matrix(omics)
+plot_data_overview(MOFAobject)
+ 
+```
+
+
+
+## Train Model
+
+```{r train_model}
+
+
+#Define data options
+data_opts <- get_default_data_options(MOFAobject)
+head(data_opts)
+
+#Define model options
+model_opts <- get_default_model_options(MOFAobject)
+head(model_opts)
+ 
+#Define train options
+train_opts <- get_default_training_options(MOFAobject)
+head(train_opts)
+
+
+#Build and train the MOFA object
+# MOFAobject <- prepare_mofa(
+#   object = MOFAobject,
+#   data_options = data_opts,
+#   model_options = model_opts,
+#   training_options = train_opts
+# )
+#  
+# 
+# MOFAobject <- run_mofa(MOFAobject, outfile="Expression_methylation_MOFA/Lwo_gene.hdf5")
+# saveRDS(MOFAobject,"Lwo_gene.rds")
+
+MOFAobject <- readRDS("..//Lwo_gene.rds")
+
+MOFAobject <- readRDS("..//High_gene.rds")
+
+
+ names(AML_metadata)[1] = "sample"
+ 
+ samples_metadata(MOFAobject) <- AML_metadata
+```
+
+## Factor correlation
+
+```{r Factor_correlation}
+ 
+plot_factor_cor(MOFAobject)
+
+wrap_plots(
+    plot_variance_explained(MOFAobject, x="view", y="factor", plot_total = T),
+    nrow = 2
+) + plot_annotation(title = "Variance Explained per factor and assay",
+                    theme = theme(plot.title = element_text(hjust = 0.5)))
+
+r2$r2_total
+#r2$r2_per_factor
+```
+
+
+
+## Variance explained
+
+```{r Variance_explained}
+plot_variance_explained(MOFAobject, plot_total = T)[[2]]
+
+plot_variance_explained(MOFAobject, x="view", y="group", factors=1:3)
+```
+
+
+## Factor variance explained
+```{r Factor_variance}
+plot_variance_explained(MOFAobject, max_r2=70)
+
+
+```
+
+## Gene weight
+
+```{r gene_loadings}
+plot_top_weights(MOFAobject,
+  view = "mRNA",
+  factor = 1,
+  nfeatures = 40
+)
+
+plots <- lapply(c("mRNA", "Methylation"), function(name) {
+    plot_top_weights(MOFAobject,
+                     view = name,
+                     factor = 1,
+                     nfeatures = 20) +
+        labs(title = paste0("Top weights of the ", name," assay"))
+})
+wrap_plots(plots, nrow = 2) & theme(text = element_text(size = 8))
+
+
+
+
+```
+
+## Factor and weights
+```{r Factor_Weights}
+weights_gene <- get_weights(MOFAobject, as.data.frame = TRUE,factors = 2,views = "mRNA")
+head(weights_gene)
+
+weights <- get_weights(MOFAobject, as.data.frame = TRUE,factors = 2,views = "Methylation")
+head(weights, n=3)
+
+
+factors <- get_factors(MOFAobject, as.data.frame = TRUE)
+head(factors, n=3)
+
+
+data <- get_data(MOFAobject, as.data.frame = TRUE)
+head(data, n=3)
+```
+
+
+## Scatter 
+
+
+```{r Scatter_negative_postive}
+#https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9589366/
+plot_data_scatter(MOFAobject,
+  view = "mRNA",         # view of interest
+  factor = 1,sign = "negative",             # factor of interest
+  features = 10,           # number of features to plot (they are selected by weight)
+  add_lm = TRUE,          # add linear regression
+  color_by = "RISK_CYTO",
+  dot_size = 1.2
+)
+
+plot_data_scatter(MOFAobject,
+  view = "mRNA",         # view of interest
+  factor = 1,sign = "positive",             # factor of interest
+  features = 10,           # number of features to plot (they are selected by weight)
+  add_lm = TRUE,          # add linear regression
+  color_by = "RISK_CYTO",
+  dot_size = 1.2
+)
+
+```
+
+
+
+
+
+## Probe weight
+```{r probe_loadings}
+plot_top_weights(MOFAobject,
+  view = "Methylation",
+  factor = 1,
+  nfeatures = 40
+)
+
+
+```
+
+
+
+
+
+
+## Factor visualisaation
+```{r FACTOR_PCA}
+#https://hackmd.io/@iF3f1a6eRUCvUuvnjPMB7w/BJx7ZgXsi
+#https://hackmd.io/@carlherrmann?utm_source=preview-mode&utm_medium=rec
+plot_factor(MOFAobject, 
+  factor = 1:7,
+  color_by = "FAB",
+  shape_by = "RISK_CYTO"
+)
+```
+
+## Factor desity plot
+
+```{r Factor_density_plot}
+plot_factors(MOFAobject, 
+  factors = 1:3,
+  color_by = "RISK_CYTO"
+)
+```
+
+
+## Weight of all factors
+
+```{r Weigh_factors}
+allWeights <- get_weights(MOFAobject,
+                         views = "all",
+                         factors = "all",
+                         as.data.frame = TRUE) %>% as.tibble()
+
+allFactors <- get_factors(
+  MOFAobject, 
+  factors = "all",
+  as.data.frame = TRUE
+) %>% as.tibble()
+
+Factor_subset = AML_metadata %>% select(sample,RISK_CYTO,FAB,OS,Status)
+
+allFactors1 <- inner_join(allFactors,Factor_subset)
+#https://stackoverflow.com/questions/40454681/scatter-plots-for-all-pairwise-columns-between-two-data-frames
+df1 <- allFactors
+mfun <- function(x,label="df1") {
+    x %>%
+      mutate(obs=seq(n())) %>%    ## add obs numbers
+      gather(key=var,value=value,-obs)  ## reshape
+}
+df12 <- mfun(df1) %>% full_join(mfun(Factor_subset),by="obs")
+
+## melt
+plotTab <- filter(allFactors1, factor %in% c("Factor1","Factor2","Factor3","Factor4","Factor5","Factor6",
+          "Factor7","Factor8","Factor9","Factor10","Factor11","Factor12","Factor13")) %>%
+  spread(key =factor, value = value) %>% mutate(FAB = factor(FAB))
+
+plotTab_filter = plotTab %>% select(-c(sample,group,OS,Status,FAB))
+tbl <- tibble::as_tibble(plotTab_filter)
+#df_long <- melt(plotTab_filter, id.vars=c("RISK_CYTO", "FAB"))
+#https://stackoverflow.com/questions/67990027/how-can-i-plot-two-column-combinations-from-a-df-or-tibble-as-a-scatterplot-in-r
+tbl2 <- tbl %>%
+  pivot_longer(cols = -RISK_CYTO, names_to = "attr", values_to = "value") %>%
+  nest_by(attr) %>% {
+    d <- tidyr::expand(., V1 = attr, V2 = attr) # expand combinations
+    #rename the nested data to avoid naming conflicts
+    d <- left_join(d, mutate(., data = list(rename_with(data, .fn = ~paste0(.x,"_x")))), by = c("V1"="attr"))
+    d <- left_join(d, mutate(., data = list(rename_with(data, .fn = ~paste0(.x,"_y")))), by = c("V2"="attr"))
+    d
+  } %>%
+  unnest(c(data.x, data.y))
+
+```
+
+
+## Separation by factors
+
+```{r Separation_Factors}
+plotTab <- filter(allFactors1, factor %in% c("Factor1","Factor2","Factor3","Factor4","Factor5","Factor6",
+          "Factor7","Factor8","Factor9","Factor10","Factor11","Factor12","Factor13")) %>%
+  spread(key =factor, value = value) %>% mutate(FAB = factor(FAB))
+
+p <- ggplot(plotTab, aes(x=Factor1, y=Factor2, color = FAB, 
+                         shape = RISK_CYTO, label = sample,siz)) + 
+  geom_point(aes(size = 1.2)) 
+  #scale_shape_manual(values = c(M = 16, U =1))
+p
+#https://stackoverflow.com/questions/40454681/scatter-plots-for-all-pairwise-columns-between-two-data-frames
+
+######################### Plot all the latent factors
+ggplot(tbl2, aes(x = value_x, y = value_y, color = class_x)) +
+  geom_point() +
+  facet_grid(rows = vars(V1), cols = vars(V2))
+
+```
+
+
+## Plot_heatmap_mrna
+```{r mrna_heatmap}
+plot_data_heatmap(MOFAobject,
+                  view = "mRNA",         # view of interest
+                  factor = 2,             # factor of interest
+                  features = 90,          # number of features to plot (they are selected by weight)
+                  denoise = TRUE,
+                  # extra arguments that are passed to the `pheatmap` function
+                  cluster_rows = TRUE, cluster_cols = TRUE,
+                  show_rownames = TRUE, show_colnames = FALSE,annotation_samples = "RISK_CYTO"
+)
+
+
+
+```
+
+
+## methylation heatmap
+```{r}
+plot_data_heatmap(MOFAobject,
+                  view = "Methylation",         # view of interest
+                  factor = 2,             # factor of interest
+                  features = 90,          # number of features to plot (they are selected by weight)
+                  
+                  # extra arguments that are passed to the `pheatmap` function
+                  cluster_rows = TRUE, cluster_cols = TRUE,
+                  show_rownames = TRUE, show_colnames = FALSE,annotation_samples = "RISK_CYTO"
+)
+```
+
+
+
+
+
+
+
+## Survival
+
+```{r survial_factor}
+survT <- Factor_subset
+names(survT)[5] = "died"
+```
+
+## Survial cox function
+
+```{r Cox_function}
+com <- function(response, time, endpoint, scale =FALSE) {  
+  
+  if (scale) {
+    #calculate z-score
+    response <- (response - mean(response, na.rm = TRUE))/sd(response, na.rm=TRUE)
+  }
+  surv <- coxph(Surv(time, endpoint) ~ response) 
+  
+  
+  tibble(p = summary(surv)[[7]][,5], 
+         HR = summary(surv)[[7]][,2], 
+         lower = summary(surv)[[8]][,3], 
+         higher = summary(surv)[[8]][,4])
+}
+```
+
+
+## HR ratio cox
+
+```{r Cox_hazard}
+testTab <- left_join(allFactors1, survT)
+
+#for OS
+resOS <- filter(testTab, !is.na(OS)) %>%  
+  group_by(factor) %>%
+  do(com(.$value, .$OS, .$died, TRUE)) %>% ungroup() %>%
+  arrange(p) %>% mutate(p.adj = p.adjust(p, method = "BH")) %>%
+  mutate(Endpoint = "OS")
+
+#resOS
+#1 Factor4  0.00361 0.602 0.428  0.848 0.0542 OS      
+
+
+plotTab <- resOS %>%
+ filter(factor %in% c("Factor1","Factor2","Factor3","Factor4","Factor5","Factor6","Factor7","Factor8","Factor9",
+                      "Factor10","Factor11","Factor12","Factor13","Factor14","Factor15"))
+
+
+plotTab <- resOS %>%
+ filter(factor %in% c("Factor4"))
+
+  
+haPlot <- ggplot(plotTab, aes(x=factor, y = HR, col = Endpoint, dodge = Endpoint)) + 
+  geom_hline(yintercept = 1, linetype = "dotted") +
+  geom_point(position = position_dodge(width=0.8)) +
+  geom_errorbar(position = position_dodge(width =0.8), 
+                aes(ymin = lower, ymax = higher), width = 0.3, size=1) + 
+  geom_text(position = position_dodge2(width = 0.8),
+            aes(x=as.numeric(as.factor(factor))+0.15,
+                label = sprintf("italic(P)~'='~'%s'",
+                                formatNum(p))),
+            color = "black",size =5, parse = TRUE) +
+  xlab("Factor") + ylab("Hazard ratio") +
+  scale_y_log10(limits = c(0.5,4)) +
+  coord_flip() + theme_classic(base_size = 20) + theme(legend.title = element_blank(),
+                                    legend.position = c(0.2,0.1),
+                                    legend.background = element_blank(),
+                                    legend.key.size = unit(0.5,"cm"),
+                                    legend.key.width = unit(0.6,"cm"),
+                                    legend.text = element_text(size=rel(1.2))) +
+  scale_color_manual(values = c(OS = colList[3], TTT = colList[5])) 
+
+#haPlot
+
+
+
+```
+
+
+## KMplot
+
+```{r KM_plot}
+facList <- sort(filter(resOS, p <=0.05)$factor)
+osList <- lapply(facList, function(x) {
+  eachTab <- filter(testTab, factor == x) %>%
+    select(value, OS, died) %>% filter(!is.na(OS))
+  pval <- filter(resOS, factor == x)$p
+  km(eachTab$value, eachTab$OS, eachTab$died, sprintf("%s VS Overall survival time", x),
+     stat = "maxstat", pval = pval, showTable = TRUE)
+})
+
+grid.arrange(grobs = osList, ncol = 2)
+
+#https://www.huber.embl.de/users/jlu/Pheno1000/CPS1000_MOFA.html
+
+facList <- c("Factor3","Factor7","Factor14")
+facList <- c("Factor4")
+
+plotList <- lapply(facList, function(x) {
+  eachTab <- filter(testTab, factor == x) %>%
+    select(value, OS, died) %>% filter(!is.na(OS))
+  km(eachTab$value, eachTab$OS, eachTab$died, sprintf("%s VS Overall Survival", x), stat = "maxstat")
+})
+
+grid.arrange(grobs = plotList, ncol = 2)
+
+## survminer
+SurvObject <- Surv(MOFAobject@samples_metadata$OS,MOFAobject@samples_metadata$Status)
+Z <- get_factors(MOFAobject)[[1]]
+fit <- coxph(SurvObject ~ Z) 
+fit
+##
+
+# examine significant factors
+plot_top_weights(MOFAobject,
+  view = "mRNA",
+  factor = 4,
+  nfeatures = 40
+)
+
+```
+
+
+## Filter factors
+
+```{r Factor_filter}
+# facTab <- filter(allFactors1, factor == "Factor1")
+# 
+# facTab
+# 
+# LDT <- AML_metadata %>% mutate(F4 = facTab[match(patID, facTab$sample),]$value) %>%
+#   filter(!is.na(F4)) %>%
+#   mutate(IGHV = as.factor(facTab[match(patID, facTab$sample),]$IGHV))
+# corRes <- cor.test(log10(LDT$doubling.time), LDT$F4)
+```
+
+
+
+
+
+

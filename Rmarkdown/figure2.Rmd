@@ -1,0 +1,824 @@
+---
+title: "figure2"
+author: "KCM"
+date: "2022-08-01"
+output: 
+  html_document: default
+  word_document: default
+  pdf_document: default
+  #officedown::rdocx_document:
+    #reference_docx: styles.docx
+code_folding: hide
+---
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r eval=!exists(".standalone"), message=FALSE, include=!exists(".standalone")}
+plotDir = ifelse(exists(".standalone"), "", "part1/")
+if(plotDir!="") if(!file.exists(plotDir)) dir.create(plotDir)
+knitr::opts_chunk$set(fig.path=plotDir, dev=c("png", "pdf"))
+knitr::opts_chunk$set(dpi=600,fig.width=10)
+
+
+library(limma)
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(AnnotationDbi)
+library(affy)
+library(gcrma)
+library(hgu133plus2.db )
+library(VennDiagram)
+library(org.Hs.eg.db)
+library(GenomicRanges)
+library(GenomicFeatures)
+library(rtracklayer)
+library(biomaRt)
+library(glmnet)
+library(survival)
+library(Hmisc)
+library(randomForestSRC)
+library(hgu133plus2.db )
+library(RColorBrewer)
+set1 <- brewer.pal(9,"Set1")
+library(cgdsr)
+library(CoxHD)
+library(mg14) ## From github.com/mg14/mg14
+library(xtable)
+library(Hmisc)
+library(dplyr)
+library(cowplot)
+library(tidyverse)
+library(broom)
+library(GGally)
+library(gridExtra)
+library(ggplot2)
+source("..//NCOM/mg14.R")
+#library(officedown)
+
+
+```
+
+
+
+
+# Clinical parameters overlall correlation:Subtype
+
+```{r Clinical_data_correlation_subtype, fig.height=10}
+
+# clinical = read.csv("..//TCGA_173_samples/TCGA_NCOM_clinical_dfs.txt",sep = "\t")
+# #head(clinical)
+# Covariates = clinical %>% select(TCGA_ID,Wbc,HB,Platelet,PB_Blasts,BM_Blasts)
+# names(Covariates)[1] = "PATIENT_ID"
+# 
+# class_info = read.csv("..//TCGA_173_samples/data_clinical_patient.txt",sep = "\t",skip = 4)
+# #head(class_info)
+# names(class_info)[1] = "PATIENT_ID"
+# subtype = class_info %>% select(PATIENT_ID,FAB,AGE,RISK_CYTO)
+# names(subtype)[1] = "PATIENT_ID"
+# 
+# 
+# TMB = read.csv("..//laml_tcga_pub/data_clinical_sample.txt",skip = 4,sep = "\t")
+# TMB1 <- TMB %>% select(PATIENT_ID,TMB_NONSYNONYMOUS)
+# merge_clinical_class = inner_join(Covariates,subtype)
+# merge_clinical_class_TMB = inner_join(merge_clinical_class,TMB1)
+# 
+# 
+# dat1 <- 
+#   merge_clinical_class_TMB %>% 
+#   mutate(WBC =  log2(Wbc+1),
+#          Platelets = log2(Platelet+1),
+#          PB_Blast = log2(PB_Blasts+1),
+#          BM_Blast = log2(BM_Blasts+1))
+# 
+# 
+# #Covariates_correlation <- dat1 %>% select(FAB,RISK_CYTO,TMB_NONSYNONYMOUS,WBC,Platelets,PB_Blasts,BM_Blast,Ag)
+# 
+# Covariates_correlation <- dat1 %>% select(TMB_NONSYNONYMOUS,AGE,BM_Blast,WBC,Platelets,PB_Blast,FAB)
+# 
+# df <- Covariates_correlation %>% drop_na()
+# names(df)[1] = "TMB"
+#  ggscatmat(df)
+
+# 
+# Covariates_correlation %>% 
+#   GGally::ggscatmat(columns = 2:7 ,color = "FAB", corMethod = "spearman") +
+#   ggsci::scale_color_jco()+
+#   ggpubr::theme_pubclean()+
+#   theme(strip.background = element_rect(fill = "grey90"), 
+#         axis.text = element_text(size = 8), 
+#         legend.position = "right",
+#         legend.key = element_blank())
+
+```
+
+# Clinical parameter correlation 
+
+
+```{r,results='asis'}
+# corr_mat <- round(cor(df[-c(7)]),
+#       digits = 2 # rounded to 2 decimals
+# )
+# 
+# #print(xtable(corr_mat), type="html", )
+# knitr::kable(corr_mat)
+
+
+```
+
+
+
+
+
+
+
+
+
+## 18k genes
+
+
+```{r Total_genes_density}
+tcgaExpr <- read.table("..//NCOM/fig1_cbiportal/tcga_laml_entrez_ncom_filtered.txt",sep = "\t",strip.white = FALSE,check.names = FALSE,header=TRUE,row.names = 1)
+
+
+# pca_data$variance = apply(pca_data, 1, var)
+# tcgaExpr = pca_data[pca_data$variance >= quantile(pca_data$variance, c(.10)), ] #50% most variable genes
+# tcgaExpr$variance <- NULL
+ 
+
+
+#tcgaExpr[,1:173] <- log(tcgaExpr[1:173]+1,2)
+tcgaExpr <- log(tcgaExpr+1)
+
+
+s <- AnnotationDbi::select(org.Hs.eg.db, rownames(tcgaExpr), "SYMBOL","ENTREZID")
+
+m <- match(rownames(tcgaExpr), s$ENTREZID)
+sum(is.na(m))
+
+rownames(tcgaExpr) <- s$ENTREZID[m]
+colnames(tcgaExpr) <- gsub("\\.","-",colnames(tcgaExpr))
+tcgaExpr <- tcgaExpr[rowSums(is.na(tcgaExpr))==0 & !is.na(rownames(tcgaExpr)),]
+
+tcgaClinical <- read.table("..//TCGA_NCOM_clinical.txt", sep="\t", header=TRUE, comment.char = "#") ## tab-delimietd version of Supplementary Table S3, Clinical sheet.
+colnames(tcgaClinical)[3:12] <- capitalize(colnames(tcgaClinical)[3:12])
+rownames(tcgaClinical) <- as.character(tcgaClinical$TCGA_ID)
+tcgaGenetic <- read.table("..//TCGA_NCOM_genetic.txt", sep=",", header=TRUE, comment.char = "#") ## tab-delimietd version of Supplementary Table S3, Genetics sheet.
+tcgaGenetic$TCGA_ID <- factor(as.character(tcgaGenetic$TCGA_ID), levels = levels(tcgaClinical$TCGA_ID))
+g <- as.character(tcgaGenetic$Hugo_Symbol)
+
+g[tcgaGenetic$Hugo_Symbol=="FLT3" & tcgaGenetic$Variant_Type == 'INS'] <- "FLT3_ITD"
+g[tcgaGenetic$Hugo_Symbol=="FLT3" & tcgaGenetic$Variant_Type == 'SNP'] <- "FLT3_TKD"
+
+tcgaMutation <- (table(tcgaGenetic$TCGA_ID,g)) > 0
+
+
+plot(density(tcgaExpr[,1]))
+for(j in 1:ncol(tcgaExpr)) lines(density(tcgaExpr[,j]))
+```
+
+
+## PCA of samples to show the overall variance 
+
+```{r PCA_samples,results='asis'}
+#tcgaPca <- prcomp(t(tcgaExpr))
+tcgaPca <- prcomp(t(tcgaExpr),center = T,scale. = T)
+#summary(tcgaPca)
+#print(xtable(variance_explained), type="html", )
+#knitr::kable(variance_explained)
+components = data.frame(tcgaPca$x)
+mainPlot <- ggplot(components,aes(x=PC1,y=PC2)) + geom_point(size = 2)+
+  scale_y_continuous(limits=c(NA,100))
+#Prop variance
+Prop <- as.data.frame(summary(tcgaPca)[[6]])
+Propf <- round(Prop[2,],3)
+Propf1 <- Propf[,1:4]
+
+propPlot <- tableGrob(Propf1,theme = ttheme_default(base_size = 15))
+
+grid.arrange(propPlot, mainPlot, ncol=2)
+
+
+```
+
+# PCA biplot gene_expression 
+
+```{r gene_expression_biplot}
+
+# gene_expr <- read.table("..//NCOM/fig1_cbiportal/tcga_laml_entrez_ncom_filtered.txt",sep = "\t",strip.white = FALSE,check.names = FALSE,header=TRUE,row.names = 1)
+# #head(gene_expr)
+# Metadata <- read.table("../TGCA_figure4/tcga_clinical_pca_density.txt", sep = ",",strip.white = FALSE,row.names = 1,check.names = FALSE,header=TRUE,stringsAsFactors = FALSE)
+# #head(Metadata)
+# pc <- prcomp(t(gene_expr),center = T,scale. = T)
+# df <- cbind(pc$x[,1:2],as.character(Metadata[,1])) %>% as.data.frame()
+# df$PC1 <- as.numeric(df$PC1) #/ (pc$sdev[1] * sqrt(ncol(scRNAseq)))
+# df$PC2 <- as.numeric(df$PC2) #/ (pc$sdev[2] * sqrt(ncol(scRNAseq)))
+# 
+# df$V3 <- as.factor(df$V3)
+# pca_data_perc=round(100*pc$sdev^2/sum(pc$sdev^2),1)
+# percent <- 100*pc$sdev^2/sum(pc$sdev^2)
+# perc_data <- data.frame(percent=percent, Principal_Components_contribution=1:length(percent))
+# 
+# df_pca_data=data.frame(PC1 = pc$x[,1], 
+#                       PC2 = pc$x[,2],Cyto_risk = Metadata[,1])
+# #df_pca_data
+# 
+# p1 <- ggplot(df_pca_data, aes(PC1,PC2, colour = Cyto_risk))+
+#   geom_point(size=3)+
+#   labs(x=paste0("PC1 (",pca_data_perc[1],")"), y=paste0("PC2 (",pca_data_perc[2],")"))
+# 
+# #p1
+# xdens <- 
+#   axis_canvas(p1, axis = "x") + 
+#   geom_density(data = df, aes(x = PC1, fill = V3, colour = V3), alpha = 0.3)
+# ydens <-
+#   axis_canvas(p1, axis = "y", coord_flip = TRUE) + 
+#   geom_density(data = df, aes(x = PC2, fill = V3, colour = V3), alpha = 0.3) +
+#   coord_flip()
+# p1 %>%
+#   insert_xaxis_grob(xdens, grid::unit(1, "in"), position = "top") %>%
+#   insert_yaxis_grob(ydens, grid::unit(1, "in"), position = "right") %>%
+#   ggdraw()
+# 
+# p1
+```
+
+
+
+# PCA biplot gene_methylation
+```{r gene_methylation_biplot}
+
+# Meth_expr <- read.table("../TGCA_figure4/Methylation_gene_updated.txt",sep = "\t",strip.white = FALSE,check.names = FALSE,header=TRUE,row.names = 1)
+# #head(gene_expr)
+# Metadata1 <- read.table("../TGCA_figure4/MOFA_metadata.txt", sep = "\t",strip.white = FALSE,row.names = 1,check.names = FALSE,header=TRUE,stringsAsFactors = FALSE)
+# #head(Metadata)
+# 
+# pc <- prcomp(t(Meth_expr),center = T,scale. = T)
+# df <- cbind(pc$x[,1:2],as.character(Metadata1[,2])) %>% as.data.frame()
+# df$PC1 <- as.numeric(df$PC1) #/ (pc$sdev[1] * sqrt(ncol(scRNAseq)))
+# df$PC2 <- as.numeric(df$PC2) #/ (pc$sdev[2] * sqrt(ncol(scRNAseq)))
+# 
+# df$V3 <- as.factor(df$V3)
+# pca_data_perc=round(100*pc$sdev^2/sum(pc$sdev^2),1)
+# percent <- 100*pc$sdev^2/sum(pc$sdev^2)
+# perc_data <- data.frame(percent=percent, Principal_Components_contribution=1:length(percent))
+# 
+# df_pca_data=data.frame(PC1 = pc$x[,1], 
+#                       PC2 = pc$x[,2],Cyto_risk = Metadata1[,2])
+# #df_pca_data
+# 
+# p2 <- ggplot(df_pca_data, aes(PC1,PC2, colour = Cyto_risk))+
+#   geom_point(size=3)+
+#   labs(x=paste0("PC1 (",pca_data_perc[1],")"), y=paste0("PC2 (",pca_data_perc[2],")"))
+# 
+# #p1
+# xdens <- 
+#   axis_canvas(p2, axis = "x") + 
+#   geom_density(data = df, aes(x = PC1, fill = V3, colour = V3), alpha = 0.3)
+# ydens <-
+#   axis_canvas(p2, axis = "y", coord_flip = TRUE) + 
+#   geom_density(data = df, aes(x = PC2, fill = V3, colour = V3), alpha = 0.3) +
+#   coord_flip()
+# p2 %>%
+#   insert_xaxis_grob(xdens, grid::unit(1, "in"), position = "top") %>%
+#   insert_yaxis_grob(ydens, grid::unit(1, "in"), position = "right") %>%
+#   ggdraw()
+# 
+# p2
+
+
+```
+
+
+
+
+# PCA screeplot overall cumulative variance 
+```{r PCA_screeplot}
+par(bty="n", mgp = c(2.5,.5,0), mar=c(3,4,1,2)+.1, tcl=-.25, las=1)
+plot(tcgaPca$sdev^2/sum(tcgaPca$sdev^2), type="h", col=set1[1], xlab="", ylab=expression(paste("Explained variance ", Rgenetics^2)) , ylim=c(0,0.15), yaxs="i")
+mtext(side=1, "Principal component", line=2)
+c <- cumsum(tcgaPca$sdev^2)/sum(tcgaPca$sdev^2)* tcgaPca$sdev[1]^2/sum(tcgaPca$sdev^2)
+lines(c  , type="s")
+axis(4, at = pretty(c(0,1))* tcgaPca$sdev[1]^2/sum(tcgaPca$sdev^2), labels=pretty(c(0,1)))
+legend("bottomright", col=c(set1[1],"black"), lty=1, c("Per PC","Cumulative"), bty="n")
+lines(c(180,40,40),c(c[40],c[40],0), lty=3)
+
+```
+
+
+
+
+
+
+
+## Making data for covariates
+
+
+```{r Covariates}
+
+t <- cbind(tcgaMutation +0, tcgaClinical[,14:24])
+t <- t[,colSums(t[colnames(tcgaExpr),],na.rm=TRUE)>=5]
+tcgaCovariates <- as.matrix(cbind(Offset=1,t, Gender=tcgaClinical$Gender, Age=tcgaClinical$AOD/10))[colnames(tcgaExpr),]
+#groups <- factor(c("Offset", rep("Genetics",22), "Translocations",rep("CNA", 5), rep("Translocations",2), rep("Demographics",2)), levels=c("Offset","Genetics","CNA","Translocations","Demographics"))
+colnames(tcgaCovariates)
+
+#groups <- factor(c("Offset", rep("Genetics",22), "Translocations",rep("CNA", 5), rep("Translocations",2)), levels=c("Offset","Genetics","CNA","Translocations"))
+groups <- factor(c("Offset", rep("Genetics",22), "Translocations",rep("CNA", 5), rep("Translocations",2), rep("Demographics",2)), levels=c("Offset","Genetics","CNA","Translocations","Demographics"))
+
+tcgaCovariates <- tcgaCovariates[,order(groups)]
+groups <- groups[order(groups)]
+set1 = c(brewer.pal(9,"Set1"), brewer.pal(8, "Dark2"))
+
+col1 <- c("grey",set1[c(3,5,2,7,9,11,13)])
+
+names(col1) <- levels(groups)
+
+```
+
+
+## Overlay mutation on PCA
+
+```{r PCA_mutation}
+
+par(bty="n", mgp = c(0,0.5,0), mar=c(1,1,1.5,0)+.1, las=1, tcl=-.25, font.main=3, mfrow=c(6,6), xpd=NA)
+i<-0
+for (geneId in colnames(tcgaCovariates)[-1]){
+  i<-i+1
+  plot(tcgaPca$x[rownames(tcgaCovariates),], cex=0.5, 
+       pch=NA, 
+       xlab=ifelse(i==1,"PC1",""), ylab=ifelse(i==1,"PC2",""),main=geneId, font.main=ifelse(grepl("[[:lower:]]",geneId),1,3), cex.main=1.33, cex.lab=1.2,xaxt="n", yaxt="n", ylim=c(-65,65))
+  if(geneId != "Age")
+    w <- rownames(tcgaCovariates)[which(tcgaCovariates[,geneId] == 1)]
+  else
+    w <- rownames(tcgaCovariates)[which(tcgaCovariates[,geneId] > median(tcgaCovariates[,geneId], na.rm=TRUE))]
+  points(tcgaPca$x[!rownames(tcgaPca$x) %in% w,], pch=ifelse(is.na(tcgaCovariates[!rownames(tcgaPca$x) %in% w,geneId]),1,19), cex=0.5, col="grey", lwd=0.5)
+  points(tcgaPca$x[w,], pch=16, cex=0.85, col=col1[groups[i+1]], lwd=0.05)
+  u <- matrix(par("usr"), ncol=2)
+  if(i==1){
+    arrows(u[1,1],u[1,2], u[2,1],u[1,2],length=0.02)
+    arrows(u[1,1],u[1,2], u[1,1],u[2,2],length=0.02)
+  }
+  text(u[2],u[3] + (u[4]-u[3])*.9, labels=paste("n=",length(w), sep=""), bty="n", cex=1.2, pos=2)
+}
+plot.new()
+legend("center",c("Missing","Wildtype","Mutant"), pch=c(1,19,19), col=c("grey","grey","black"), bty="n", pt.cex=c(0.5,0.5,rep(0.85,4)),cex=1.2, pt.lwd=0.5)
+
+```
+
+
+## Impute and Run the model
+
+
+```{r Impute}
+
+
+poorMansImpute <- function(x) {x[is.na(x)] <- mean(x, na.rm=TRUE); return(x)}
+tcgaDesign <- apply(tcgaCovariates,2,poorMansImpute)
+
+
+tcgaGlm = lmFit(as.matrix(tcgaExpr), design = tcgaDesign) 
+tcgaGlm = eBayes(tcgaGlm)
+```
+
+
+## Generate a Random model
+
+```{r Random model}
+
+set.seed(42)
+tcgaRlm <- lmFit(tcgaExpr[,rownames(tcgaDesign)], apply(tcgaDesign, 2, sample))
+tcgaRlm <- eBayes(tcgaRlm)
+F.stat <- classifyTestsF(tcgaRlm[,-1],fstat.only=TRUE)
+tcgaRlm$F <- as.vector(F.stat)
+df1 <- attr(F.stat,"df1")
+df2 <- attr(F.stat,"df2")
+if(df2[1] > 1e6){ # Work around bug in R 2.1
+  tcgaRlm$F.p.value <- pchisq(df1*tcgaRlm$F,df1,lower.tail=FALSE)
+}else
+tcgaRlm$F.p.value <- pf(tcgaRlm$F,df1,df2,lower.tail=FALSE)
+
+```
+
+# Explained variance by different categories : genetics and cytogenetics
+
+## Genetics 
+
+
+```{r Variance_genetics}
+F.stat <- classifyTestsF(tcgaGlm[,2:23],fstat.only=TRUE) ## All genetics & cytogenetics
+df1 <- attr(F.stat,"df1")
+df2 <- attr(F.stat,"df2")
+F.p.value <- pchisq(df1*F.stat,df1,lower.tail=FALSE)
+R.stat <- classifyTestsF(tcgaRlm[,2:23],fstat.only=TRUE) ## Random
+
+Rall = 1 - 1/(1 + tcgaGlm$F * (ncol(tcgaDesign)-1)/(nrow(tcgaDesign)-ncol(tcgaDesign)))
+Rgenetics = 1 - 1/(1 + F.stat * 21/(nrow(tcgaDesign)-ncol(tcgaDesign)))
+Pgenetics = 1 - 1/(1 + R.stat * 21/(nrow(tcgaDesign)-ncol(tcgaDesign)))
+names(Rgenetics) <- names(Pgenetics) <- names(Rall) <-  rownames(tcgaExpr)
+
+par(bty="n", mgp = c(2,.33,0), mar=c(3,2.5,1,1)+.1, las=1, tcl=-.25, xpd=NA)
+d <- density(Pgenetics,bw=1e-3)
+f <- 1#nrow(gexpr)/512
+plot(d$x, d$y * f, col='grey', xlab=expression(paste("Explained variance per gene ", R^2)), main="", lwd=2, type="l", ylab="", xlim=c(0,0.7))
+title(ylab="Density", line=1.5)
+d <- density(Rgenetics, bw=1e-3)
+r <- min(Rgenetics[p.adjust(F.p.value,"BH")<0.05])
+x0 <- which(d$x>r)
+polygon(d$x[c(x0[1],x0)], c(0,d$y[x0])* f, col=paste(set1[1],"44",sep=""), border=NA)
+lines(d$x, d$y* f, col=set1[1], lwd=2)
+#points(d$x[x0[1]], d$y[x0[1]]*f, col=set1[1], pch=16)
+text(d$x[x0[1]], d$y[x0[1]]*f, pos=4, paste(sum(Rgenetics > r), "genes q < 0.05"))
+legend("topright", bty="n", col=c(set1[1], "grey"), lty=1, c("Observed","Random"), lwd=2)
+
+```
+
+
+## cytogenetics 
+
+```{r variance_cytogenetics}
+F.stat <- classifyTestsF(tcgaGlm[,24:31],fstat.only=TRUE) ## All genetics & cytogenetics
+df1 <- attr(F.stat,"df1")
+df2 <- attr(F.stat,"df2")
+F.p.value <- pchisq(df1*F.stat,df1,lower.tail=FALSE)
+R.stat <- classifyTestsF(tcgaRlm[,24:31],fstat.only=TRUE) ## Random
+
+Rall = 1 - 1/(1 + tcgaGlm$F * (ncol(tcgaDesign)-1)/(nrow(tcgaDesign)-ncol(tcgaDesign)))
+Rgenetics = 1 - 1/(1 + F.stat * 21/(nrow(tcgaDesign)-ncol(tcgaDesign)))
+Pgenetics = 1 - 1/(1 + R.stat * 21/(nrow(tcgaDesign)-ncol(tcgaDesign)))
+names(Rgenetics) <- names(Pgenetics) <- names(Rall) <-  rownames(tcgaExpr)
+
+par(bty="n", mgp = c(2,.33,0), mar=c(3,2.5,1,1)+.1, las=1, tcl=-.25, xpd=NA)
+d <- density(Pgenetics,bw=1e-3)
+f <- 1#nrow(gexpr)/512
+plot(d$x, d$y * f, col='grey', xlab=expression(paste("Explained variance per gene ", R^2)), main="", lwd=2, type="l", ylab="", xlim=c(0,0.7))
+title(ylab="Density", line=1.5)
+d <- density(Rgenetics, bw=1e-3)
+r <- min(Rgenetics[p.adjust(F.p.value,"BH")<0.05])
+x0 <- which(d$x>r)
+polygon(d$x[c(x0[1],x0)], c(0,d$y[x0])* f, col=paste(set1[1],"44",sep=""), border=NA)
+lines(d$x, d$y* f, col=set1[1], lwd=2)
+#points(d$x[x0[1]], d$y[x0[1]]*f, col=set1[1], pch=16)
+text(d$x[x0[1]], d$y[x0[1]]*f, pos=4, paste(sum(Rgenetics > r), "genes q < 0.05"))
+legend("topright", bty="n", col=c(set1[1], "grey"), lty=1, c("Observed","Random"), lwd=2)
+
+```
+
+
+## Explained variance by different categories : Both:genetics and cytogenetics
+
+```{r genetics_and_cytogenetics}
+F.stat <- classifyTestsF(tcgaGlm[,2:31],fstat.only=TRUE) ## All genetics & cytogenetics
+df1 <- attr(F.stat,"df1")
+df2 <- attr(F.stat,"df2")
+F.p.value <- pchisq(df1*F.stat,df1,lower.tail=FALSE)
+R.stat <- classifyTestsF(tcgaRlm[,2:31],fstat.only=TRUE) ## Random
+
+Rall = 1 - 1/(1 + tcgaGlm$F * (ncol(tcgaDesign)-1)/(nrow(tcgaDesign)-ncol(tcgaDesign)))
+Rgenetics = 1 - 1/(1 + F.stat * 21/(nrow(tcgaDesign)-ncol(tcgaDesign)))
+Pgenetics = 1 - 1/(1 + R.stat * 21/(nrow(tcgaDesign)-ncol(tcgaDesign)))
+names(Rgenetics) <- names(Pgenetics) <- names(Rall) <-  rownames(tcgaExpr)
+
+par(bty="n", mgp = c(2,.33,0), mar=c(3,2.5,1,1)+.1, las=1, tcl=-.25, xpd=NA)
+d <- density(Pgenetics,bw=1e-3)
+f <- 1#nrow(gexpr)/512
+plot(d$x, d$y * f, col='grey', xlab=expression(paste("Explained variance per gene ", R^2)), main="", lwd=2, type="l", ylab="", xlim=c(0,0.7))
+title(ylab="Density", line=1.5)
+d <- density(Rgenetics, bw=1e-3)
+r <- min(Rgenetics[p.adjust(F.p.value,"BH")<0.05])
+x0 <- which(d$x>r)
+polygon(d$x[c(x0[1],x0)], c(0,d$y[x0])* f, col=paste(set1[1],"44",sep=""), border=NA)
+lines(d$x, d$y* f, col=set1[1], lwd=2)
+#points(d$x[x0[1]], d$y[x0[1]]*f, col=set1[1], pch=16)
+text(d$x[x0[1]], d$y[x0[1]]*f, pos=4, paste(sum(Rgenetics > r), "genes q < 0.05"))
+legend("topright", bty="n", col=c(set1[1], "grey"), lty=1, c("Observed","Random"), lwd=2)
+
+
+```
+
+
+# Fitting the model and running prediction
+
+
+```{r,results='asis' }
+
+glmPrediction <- tcgaGlm$coefficients %*% t(tcgaDesign)
+rlmPrediction <- tcgaRlm$coefficients %*% t(tcgaDesign)
+
+
+testResults <- decideTests(tcgaGlm, method="hierarchical",adjust.method="BH", p.value=0.05)[,-1]
+significantGenes <- sapply(1:ncol(testResults), function(j){
+  c <- tcgaGlm$coefficients[testResults[,j]!=0,j+1]
+  table(cut(c, breaks=c(-5,seq(-1.5,1.5,l=7),5)))
+})
+colnames(significantGenes) <- colnames(testResults)
+
+t <- head(sort(Rgenetics, d=TRUE), 100)
+g <- apply(testResults[names(t),], 1, function(x) paste(colnames(testResults)[x!=0], collapse=", "))
+#print(xtable(cbind(AnnotationDbi::select(org.Hs.eg.db, names(t), c("SYMBOL","GENENAME"), "ENTREZID"),`R^2`=t, `Mutations`=g)), type="html", )
+
+knitr::kable(cbind(AnnotationDbi::select(org.Hs.eg.db, names(t), c("SYMBOL","GENENAME"), "ENTREZID"),`R^2`=t, `Mutations`=g))
+
+#print((cbind(AnnotationDbi::select(org.Hs.eg.db, names(t), c("SYMBOL","GENENAME"), "ENTREZID"),`R^2`=t, `Mutations`=g)), type="html", )
+
+
+#gene_enrich <- as.data.frame(cbind(AnnotationDbi::select(org.Hs.eg.db, names(t), c("SYMBOL","GENENAME"), "ENTREZID"),`R^2`=t, `Mutations`=g))
+```
+
+
+# Top variable genes
+```{r Top_variable_genes}
+
+par(bty="n", mgp = c(1.5,.33,0), mar=c(2.5,2.5,1,1)+.1, las=1, tcl=-.25)
+for(w in names(head(sort(Rgenetics, decreasing = TRUE),5))){
+  gene <- AnnotationDbi::select(org.Hs.eg.db, w, "SYMBOL")$SYMBOL
+  plot(glmPrediction[w,], tcgaExpr[w,rownames(tcgaDesign)], ylab=parse(text=paste("Observed  ~ italic(",gene,") ~ expression")), xlab=parse(text=paste("Predicted  ~ italic(",gene,") ~ expression")), pch=16, cex=.8)
+  par(xpd=FALSE)
+  abline(0,1)
+  u <- par("usr")
+  par(xpd=NA)
+  y <- tcgaGlm$coefficients[w,-1]+tcgaGlm$coefficients[w,1]
+  u <- par("usr")
+  x0 <- rep(u[4]-(u[4]-u[3])/8,ncol(tcgaDesign)-1)
+  y0 <- u[4] + 0.05*(u[4]-u[3]) - rank(-y)/length(y) * (u[4]-u[3])/1.2
+  d <- density(y)
+  lines(d$x, d$y/5+u[4]-(u[4]-u[3])/8, col="grey")
+  lines(d$x, -d$y/5+u[4]-(u[4]-u[3])/8, col="grey")
+  points(x=y, y=x0+violinJitter(y, magnitude=0.25)$y,pch=19, col=col1[groups[-1]])
+  text(x=tcgaGlm$coefficients[w,1], y= u[4], "Model coefficients (logFC)", cex=0.8)
+  v <- tcgaGlm$p.value[w,-1] < 0.01
+  rotatedLabel(y[v], x0[v]+0.1, labels=colnames(tcgaDesign)[-1][v], font=ifelse(grepl("[[:lower:]]", colnames(tcgaDesign)[-1]),1,3)[v], cex=.66, pos=1)
+  axis(at=-1:1 + tcgaGlm$coefficients[w,1], labels=-1:1, side=3, cex.axis=.8, line=-1, mgp = c(1.5,.05,0), tcl=-.15)
+  text(u[2],u[3] + (u[4]-u[3])/10, substitute(paste(R^2==r),list(r=round(Rgenetics[w],2))), pos=2)
+}
+
+```
+
+
+# Top differential genes genomics and cytogentics
+
+
+```{r Top_differential_genes}
+
+par(bty="n", mgp = c(2.5,.33,0), mar=c(3.5,3.3,2,0)+.1, las=2, tcl=-.25)
+b <- barplot(significantGenes, las=2, ylab = "Differentially expressed genes", col=brewer.pal(8,"RdYlBu"), legend.text=FALSE , border=0, xaxt="n")#, col = set1[simple.annot[names(n)]], border=NA)
+rotatedLabel(x0=b, y0=rep(10, ncol(significantGenes)), labels=colnames(significantGenes), cex=.7, srt=45, font=ifelse(grepl("[[:lower:]]", colnames(tcgaDesign))[-1], 1,3), col=col1[groups[-1]])
+#text(b+0.2, colSums(n)+50, colSums(n), pos=3, cex=.7, srt=90)
+x0 <-par("usr")[1] + 0.05 * (par("usr")[2]-par("usr")[1])
+dy <- 0.1*(par("usr")[4] - par("usr")[3])
+y0 <- par("usr")[4] - 1.5*dy
+image(x=x0+c(0,0.8), y=y0+seq(-dy,dy,l=9), z=matrix(1:8, ncol=8), col=brewer.pal(8,"RdYlBu"), add=TRUE)
+text(x=x0+1.5, y=y0+seq(-dy/2,dy/2,l=3), format(seq(-1,1,l=3),2), cex=0.66)
+lines(x=rep(x0+.8,2), y=y0+c(-dy*.75,dy*.75))
+segments(x0+.8,y0+seq(-dy*.75,dy*.75,l=7),x0+.9,y0+seq(-dy*.75,dy*.75,l=7))
+text(x0+.8, y0+dy*1.1, "log2 FC", cex=.66)
+rotatedLabel(b-0.1, colSums(significantGenes), colSums(significantGenes), pos=3, cex=, srt=45)
+
+
+
+```
+
+
+
+# Variance components in AML
+
+```{r Variance_component}
+library(CoxHD)
+tcgaData <- data.frame(tcgaMutation, tcgaClinical[14:24])
+tcgaData <- tcgaData[colSums(tcgaData, na.rm=TRUE)>=5]
+tcgaData <- ImputeMissing(data.frame(tcgaData, Gender=tcgaClinical$Gender, scale(tcgaClinical[,c(7:12)])))
+rownames(tcgaData) <- rownames(tcgaMutation)
+tcgaData <- tcgaData[rowSums(is.na(tcgaData))==0 & rownames(tcgaData) %in% colnames(tcgaExpr),]
+dataFrame <- data.frame(tcgaData, scale(tcgaPca$x[rownames(tcgaData),1:29]))
+survivalGroups <- rep("Blood", ncol(dataFrame))
+survivalGroups[colnames(tcgaData)%in%colnames(tcgaMutation)] <- "Genetics"
+survivalGroups[grep("^PC", colnames(dataFrame))] <- "Expression"
+survivalGroups[grep("^[a-z]", colnames(dataFrame))] <- "CNA"
+survivalGroups[grep("(t_)|_t", colnames(dataFrame))] <- "Translocations"
+survivalGroups[grep("(Gender)|(AOD)", colnames(dataFrame))] <- "Demographics"
+survivalGroups <- factor(survivalGroups, levels=c("Genetics","CNA","Translocations","Expression","Demographics","Blood"))
+survivalCol=set1[c(3,2,5,4,7,1)]#  c(brewer.pal(8, "Dark2")[1:3], brewer.pal(8, "Set1")[2:1])
+names(survivalCol) <- levels(survivalGroups)
+
+library(survival)
+tcgaSurvival <- Surv(tcgaClinical$OS + .5, tcgaClinical$Status)[match(rownames(tcgaData),tcgaClinical$TCGA_ID)]
+
+
+coxRFX <- CoxRFX(dataFrame, tcgaSurvival, which.mu = NULL) ## Further developed version of ecoxph
+VarianceComponents(coxRFX, groups=survivalGroups)
+
+
+PlotVarianceComponents(coxRFX, col=survivalCol, groups=survivalGroups)
+points(0,0,pch=16, col="white", cex=15)
+title(main="Variance components AML")
+
+
+c <- coxph(tcgaSurvival ~ 1, data=dataFrame)
+scopeStep <- as.formula(paste("tcgaSurvival ~", paste(colnames(dataFrame), collapse="+")))
+coxBIC <- step(c, scope=scopeStep, k = log(sum(!is.na(tcgaSurvival))), trace=0)
+
+summary(coxBIC)
+
+
+```
+
+
+# 5 fold cross_validation
+
+
+```{r cross_validation5_fold}
+set.seed(42)
+cvIdx <- sample(1:5, nrow(dataFrame), replace=TRUE)
+
+subsets <- list(Genetics="Genetics", Cytogenetics=c("Translocations","CNA"), Blood="Blood", Demographics="Demographics", Expression="Expression", `Gen+Cyt` = c("Genetics","Translocations","CNA"), `Gen+Cyt+Blo+Exp`=c("Genetics","Translocations","CNA","Blood","Expression"), All=unique(survivalGroups))
+colSubsets <- set1
+names(colSubsets) <- c("Blood","Cytogenetics", "Genetics","Expression","Gen+Cyt","Gen+Cyt+Blo+Exp","Demographics","All","Std. Risk")
+concordance <- sapply(1:5, function(i){
+  v <- cvIdx == i
+  c(sapply(subsets, function(s,v){
+    w <- survivalGroups %in% s
+    fit <- CoxRFX(dataFrame[!v, w]+0, tcgaSurvival[!v], which.mu=NULL)
+    p <- as.matrix(dataFrame[v,w]) %*% coef(fit)
+    survConcordance(tcgaSurvival[v]~p)$concordance
+  }, v=v), 
+  Std.Risk =  survConcordance(tcgaSurvival[v]~ c(3,1,2)[tcgaClinical$C_Risk[match(rownames(tcgaData),tcgaClinical$TCGA_ID)][v]])$concordance
+  )
+})
+rownames(concordance) <- c(names(subsets), "Std. Risk")
+par(mar=c(5,4,1,1), mgp=c(3,0.5,0))
+m <- rowMeans(concordance, na.rm=TRUE)
+e <- apply(concordance,1,var)/ncol(concordance)
+o <- order(m)
+barplot(m[o], col=colSubsets[names(m[o])], names.arg=rep("", nrow(concordance)), ylim=c(0.5,0.75), xpd=FALSE, ylab="Concordance (5x CV)") -> b
+points(jitter(rep(b,5)), concordance[o,], col="grey", pch=16, cex=.5)
+rotatedLabel(b,rep(0.49, nrow(concordance)), rownames(concordance)[o])
+segments(b, m[o]+sqrt(e)[o], b , m[o]-sqrt(e)[o])
+
+```
+
+
+# Concordance with efects of genomics
+
+
+```{r Concordance_genomics}
+par(mar=c(10,4,1,1))
+pcPrediction <- tcgaDesign[,2:23] %*% t(tcgaGlm$coefficients[,2:23]) %*% tcgaPca$rotation ## Genomics only, no offset
+set.seed(42)
+concordancePrediction <- sapply(1:100, function(i){
+  v <- sample(1:nrow(dataFrame) %% 5 + 1) == 1 ## 80:20 split for cross validation
+  fit <- CoxRFX(pcPrediction[!v, 1:29], tcgaSurvival[!v], which.mu=NULL)
+  p <- as.matrix(pcPrediction[v, 1:29]) %*% coef(fit)
+  pcp <- survConcordance(tcgaSurvival[v]~p)$concordance[1]
+  fit <- CoxRFX(tcgaPca$x[!v, 1:29], tcgaSurvival[!v], which.mu=NULL)
+  p <- as.matrix(tcgaPca$x[v, 1:29]) %*% coef(fit)
+  pc <- survConcordance(tcgaSurvival[v]~p)$concordance[1]
+  fit <- CoxRFX(dataFrame[!v,survivalGroups %in% c("Genetics","Cytogenetics")], tcgaSurvival[!v], which.mu=NULL)
+  p <- as.matrix(dataFrame[v, survivalGroups %in% c("Genetics","Cytogenetics")]) %*% coef(fit)
+  gen <- survConcordance(tcgaSurvival[v]~p)$concordance[1]
+  c(Expression=pc, Genomics=gen, `Expression (predicted)`=pcp)
+})
+c <- set1[c(4,2,4)]
+boxplot(t(concordancePrediction), notch=TRUE, ylab="Concordance", names=NA, lty=1, staplewex=0, pch=16, xaxt="n", at=1:3, border=c, col=c(NA,NA, brewer.pal(4,"Paired")[1]))
+u <- par("usr")
+rotatedLabel(1:3, rep(u[3] ,3), c("Expression","Genomics","Predicted expression"))
+```
+
+# Enrichment of GO Terms in PC1&2
+
+```{r PCA_enrichment}
+# k = AnnotationDbi::as.list(org.Hs.egGO2EG)
+# k = k[sapply(k, length)>=10]
+# c <- tcgaPca$rotation[,1:2] *  sqrt(tcgaGlm$s2.post)
+# n <- rownames(tcgaPca$rotation)
+# t = mclapply(k, function(p){
+#   ids = n %in% p
+#   sapply(1:ncol(c), function(j){
+#     if(sum(ids)>2){
+#       t <- t.test(c[ids,j], c[!ids,j], alternative="two.sided")
+#       v <- var.test(c[ids,j], c[!ids,j], alternative="greater")
+#       c(t$p.value, -diff(t$estimate),
+#         v$p.value, v$estimate)
+#     }else 
+#       rep(NA,4)
+#   })
+# }, mc.cores=5)
+# GO.pca = matrix(unlist(t), byrow = TRUE, nrow=length(t), dimnames=list(names(t),as.vector(outer(c("pval.t","shift","pval.F","var.odds"),paste(colnames(c), sep=""), paste))))
+# 
+# #Term(names(sort(GO.pca[p.adjust(GO.pca[,1],"BH")<0.05,2])[1:20]))
+# 
+# knitr::kable(Term(names(sort(GO.pca[p.adjust(GO.pca[,1],"BH")<0.1,2], decreasing = TRUE)[1:30])))
+
+
+```
+
+
+## F and GO enrichment
+
+```{r F_GO_enrichment}
+# k = AnnotationDbi::as.list(org.Hs.egGO2EG)
+# k = k[sapply(k, length)>=10]
+# n <- rownames(tcgaPca$rotation)
+# c <- tcgaGlm$F
+# t = sapply(k, function(p){
+#   ids = n %in% p
+#   if(sum(ids)>2){
+#     t <- wilcox.test(c[ids], c[!ids], alternative="greater")
+#     c(t$p.value, t$statistic/sum(ids)/sum(!ids))
+#   }else 
+#     rep(NA,2)
+# })
+# GO.F = matrix(t(t), ncol=2, dimnames=list(colnames(t),as.vector(outer(c("pval.U","U"),paste(colnames(c), sep=""), paste))))
+# colnames(GO.F) <- c("pval.U","U")
+# sum(p.adjust(GO.F[,1],"BH")<0.1)
+# 
+# knitr::kable(Term(names(tail(sort(GO.F[p.adjust(GO.F[,1],"BH")<0.05,2]), 20))))
+
+```
+
+# Projecting traits into PCA space
+
+
+
+
+
+# Lasso regression 
+
+```{r Lasso_regression}
+samples = sub("_.+","", colnames(tcgaExpr))
+ix <- samples
+subs <- tcgaDesign[ix, grep("CEBPA|DNMT3A|FAM5C|FLT3_ITD|FLT3_TKD|IDH1|IDH2|KIT|TET2|KRAS|NPM1|NRAS|PHF6|PTPN11|RAD21|RUNX1|SMC1A|SMC3|STAG2|TP53|U2AF1|WT1 ", colnames(tcgaDesign))] # oncogenic mutations
+subs <- subs[,colSums(subs)>2]
+minF=5 
+cytoImputed <- tcgaDesign[ix, grep("t_15_17|complex|minus5_5q|minus7q|plus8_8q|t_8_21|inv16_t16_16", colnames(tcgaDesign), value=TRUE)]
+cytoImputed <- cytoImputed[,colSums(cytoImputed, na.rm=TRUE)>0]
+tcgaDesign <- cbind(tcgaDesign,  cytoImputed[,colSums(cytoImputed, na.rm=TRUE)>=minF], center=TRUE, scale=FALSE)
+
+Z <-  list()
+Z$expression = scale(tcgaPca$x[samples,1:20])
+Z$genetics = scale(subs+0, scale=FALSE)
+Z$cytogenetics = scale(cytoImputed, scale=FALSE) #data[match(rownames(design), mds_clin$PDID),c("chr3","del5q","del7_7q","tri8","del11","del12","alt17q","tri19","del20q","complex")],
+Z$geneticsExpression = cbind(Z$genetics,Z$expression)
+Z$blood = scale(tcgaClinical[ix,c("Wbc","Platelet","PB_Blasts","BM_Blasts")])
+#Z$demographics = scale(mdsData[ix,c( "Gender", "Age")])
+Z$clinical = cbind(Z$blood, Z$demographics)
+Z$geneticsCytogenetics = cbind(Z$genetics, Z$cytogenetics)
+Z$geneticsCytogeneticsExpression = cbind(Z$geneticsCytogenetics, Z$expression)
+Z$expressionClinical = cbind(Z$expression, Z$clinical)
+Z$geneticsClinical = cbind(Z$genetics, Z$clinical)
+Z$geneticsExpressionClinical = cbind(Z$geneticsExpression, Z$clinical)
+Z$all = cbind(Z$geneticsCytogenetics, Z$expression, Z$clinical)
+
+
+Y <- cbind(tcgaClinical[ix,c("Wbc","Platelet","PB_Blasts","BM_Blasts")])
+colnames(Y) <- c("Wbc" ,"Platelets","PB_Blasts","Bonemarrow_blasts")
+
+
+
+Y <- Y[,order(colnames(Y))]
+X <- scale(Z$geneticsCytogeneticsExpression, scale=TRUE)
+for(j in 1:ncol(X))
+  X[is.na(X[,j]),j] <- mean(X[,j], na.rm=TRUE)
+set.seed(42)
+clinModels = lapply(Y, function(y){
+  if (class(y) %in% c("numeric","integer")){
+    if(all(y %in% c(0,1,NA)))
+      cv.glmnet(X[!is.na(y),], na.omit(y), family = "binomial", alpha=1, standardize=FALSE, nfolds=5)
+    else if(all(y %in% c(0,20,NA)))
+      cv.glmnet(X[!is.na(y),], na.omit(y), family = "poisson", alpha=1, standardize=FALSE, nfolds=5)
+    else
+      cv.glmnet(X[!is.na(y),], na.omit(y), family = "gaussian", alpha=1, standardize=FALSE, nfolds=5)
+  }
+  else if (class(y)=="factor")
+    cv.glmnet(X[!is.na(y),], na.omit(y), family="multinomial",  alpha=1, standardize=FALSE, nfolds=5)
+})
+
+
+par(bty="n", mgp = c(2.5,.5,0), mar=c(2.5,4,2,4)+.1, las=2, tcl=-.25)
+i = 1
+n <- colnames(Z$geneticsCytogeneticsExpression)
+annot <- 1 + grepl("^[A-Z]",n) + grepl("PC",n)
+names(annot) <- n
+for(m in clinModels){
+  plotcvnet(m, Z$geneticsCytogeneticsExpression, main=names(clinModels)[i],  col0="black", cex=1, simple.annot = annot, col=set1[c(3,2,4)])
+  i = i+1
+  legend("topright", col=c(set1[c(1,3)],"black")[c(1,3,2)], c(expression(paste("Explained variance ",Rgenetics^2)), expression(paste("Lasso penalty ",lambda)), expression(paste("Model coefficient ", beta))), box.lty=0, bg="#FFFFFF33", pch=c(NA,NA,19), lty=c(1,1,NA), cex=.8, pt.cex = 1)
+}
+
+```
+
+
+# Random Survival Forest
+
+```{r Random_forest_survival, fig.width=20, fig.height=20}
+
+# m <- match(rownames(tcgaPca$x),tcgaClinical$TCGA_ID)
+# rsf <- rfsrc(Surv(time, status) ~ ., data=data.frame(time=tcgaClinical$OS[m], status = tcgaClinical$Status[m], dataFrame ), ntree=1000,importance = TRUE)
+# par(cex=0.75)
+# plot(rsf)
+
+```
+
